@@ -1,12 +1,12 @@
 # 0단계 계측 플러그인 시험 체크리스트
 
-- 대상: `TulliusNovelistProbe` 0.0.1 (계측 전용, 게임 동작을 바꾸지 않음)
+- 대상: `TulliusNovelistProbe` 0.0.2 이상 (계측 전용, 게임 동작을 바꾸지 않음)
 - 걸리는 시간: 40분~1시간
 - 목적: 설계 초안 12장 0단계 1~3번(SKSE 신호, MVP 이벤트, 세부 활동, 피해 훅 공존, 성능)을 실제 게임에서 확인한다.
 
 ## 설치
 
-1. MO2에서 "Install a new mod from an archive"로 `TulliusNovelistProbe-0.0.1.zip`을 설치하고 켠다.
+1. MO2에서 "Install a new mod from an archive"로 `TulliusNovelistProbe-<버전>.zip`(가장 최신)을 설치하고 켠다.
    - ESP가 없으므로 플러그인 순서는 신경 쓰지 않아도 된다.
    - 모드 목록 순서도 상관없다(다른 모드와 겹치는 파일이 없음).
 2. 게임을 실행한다.

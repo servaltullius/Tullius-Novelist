@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <intrin.h>
 #include <fstream>
 #include <mutex>
 #include <string>

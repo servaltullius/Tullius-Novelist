@@ -16,20 +16,28 @@ namespace probe::damage
 		Fn*              g_origCharacter = nullptr;
 		Fn*              g_origPlayer = nullptr;
 
-		std::string ModuleOf(std::uintptr_t a_address)
+		struct ModuleRef
 		{
-			HMODULE module = nullptr;
+			std::string   name{ "?" };
+			std::uint64_t offset{ 0 };  // address minus module base (RVA)
+		};
+
+		ModuleRef ModuleOf(std::uintptr_t a_address)
+		{
+			ModuleRef ref;
+			HMODULE   module = nullptr;
 			if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 					reinterpret_cast<LPCWSTR>(a_address), &module) ||
 				!module) {
-				return "?";
+				return ref;
 			}
+			ref.offset = a_address - reinterpret_cast<std::uintptr_t>(module);
 			wchar_t path[MAX_PATH]{};
 			const auto len = ::GetModuleFileNameW(module, path, MAX_PATH);
-			if (len == 0) {
-				return "?";
+			if (len != 0) {
+				ref.name = std::filesystem::path(std::wstring(path, len)).filename().string();
 			}
-			return std::filesystem::path(std::wstring(path, len)).filename().string();
+			return ref;
 		}
 
 		bool IsReadable(const void* a_ptr, std::size_t a_size)
@@ -76,7 +84,13 @@ namespace probe::damage
 			return a_actor ? a_actor->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kHealth) : -1.0f;
 		}
 
-		void Observe(const char* a_label, Fn* a_original, RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
+		void ThunkActor(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage);
+		void ThunkCharacter(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage);
+		void ThunkPlayer(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage);
+
+		// a_caller: return address into whoever called the HandleHealthDamage slot. While our thunk is the
+		// outermost hook this is the real call site (game code or another plugin's DLL).
+		void Observe(const char* a_label, Fn* a_original, std::uintptr_t a_caller, RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
 		{
 			// The probe only observes: the original arguments always go down the chain unchanged.
 			// Cheap address-only relevance check first, so the per-call cost for NPC-vs-NPC damage
@@ -99,7 +113,9 @@ namespace probe::damage
 				attacker = Sanitize(a_attacker);
 			}
 			if (!target) {
-				Line("damage.badTarget").str("vtbl", a_label).hex("target", reinterpret_cast<std::uintptr_t>(a_this)).emit();
+				const auto caller = ModuleOf(a_caller);
+				Line("damage.badTarget").str("vtbl", a_label).hex("target", reinterpret_cast<std::uintptr_t>(a_this))
+					.str("callerModule", caller.name).hex("callerOffset", caller.offset).emit();
 				if (a_original) {
 					a_original(a_this, a_attacker, a_damage);
 				}
@@ -118,8 +134,18 @@ namespace probe::damage
 			}
 			perf::Scope scope("damage.post");
 			const float after = Health(target);
+			const auto  caller = ModuleOf(a_caller);
+			// If another plugin hooked the slot after us, its DLL is what we see as the caller.
+			// Report whether our thunk is still the one in the target's vtable slot.
+			const auto* vtbl = *reinterpret_cast<const std::uintptr_t* const*>(target);
+			const bool  outermost = vtbl && (vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkActor) ||
+			                                    vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkCharacter) ||
+			                                    vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkPlayer));
 			Line("damage")
 				.str("vtbl", a_label)
+				.str("callerModule", caller.name)
+				.hex("callerOffset", caller.offset)
+				.flag("probeOutermost", outermost)
 				.raw("target", forms::Json(target))
 				.raw("attacker", forms::Json(attacker))
 				.flag("attackerSanitized", a_attacker != nullptr && attacker == nullptr)
@@ -131,9 +157,19 @@ namespace probe::damage
 				.emit();
 		}
 
-		void ThunkActor(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage) { Observe("Actor", g_origActor, a_this, a_attacker, a_damage); }
-		void ThunkCharacter(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage) { Observe("Character", g_origCharacter, a_this, a_attacker, a_damage); }
-		void ThunkPlayer(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage) { Observe("PlayerCharacter", g_origPlayer, a_this, a_attacker, a_damage); }
+		// noinline keeps _ReturnAddress() pointing at the caller of the vtable slot.
+		__declspec(noinline) void ThunkActor(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
+		{
+			Observe("Actor", g_origActor, reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
+		}
+		__declspec(noinline) void ThunkCharacter(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
+		{
+			Observe("Character", g_origCharacter, reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
+		}
+		__declspec(noinline) void ThunkPlayer(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
+		{
+			Observe("PlayerCharacter", g_origPlayer, reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
+		}
 
 		void Install(const char* a_label, REL::Relocation<std::uintptr_t> a_vtbl, Fn* a_thunk, Fn*& a_original)
 		{
@@ -141,10 +177,12 @@ namespace probe::damage
 			const std::uintptr_t previous = entries ? entries[kSlot] : 0;
 			// Chain to whatever is in the slot now, vanilla or another plugin's hook. Never skip.
 			a_original = reinterpret_cast<Fn*>(a_vtbl.write_vfunc(kSlot, a_thunk));
+			const auto prev = ModuleOf(previous);
 			Line("probe.damageHook")
 				.str("vtbl", a_label)
 				.hex("previous", previous)
-				.str("previousModule", ModuleOf(previous))
+				.str("previousModule", prev.name)
+				.hex("previousOffset", prev.offset)
 				.flag("chained", a_original != nullptr)
 				.emit();
 		}
