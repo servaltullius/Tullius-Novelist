@@ -1,0 +1,145 @@
+#include "Forms.h"
+#include "Out.h"
+
+namespace probe::forms
+{
+	namespace
+	{
+		std::mutex                    g_teamLock;
+		std::unordered_set<RE::FormID> g_team;
+
+		using PtrList = std::vector<std::uintptr_t>;
+		std::atomic<std::shared_ptr<const PtrList>> g_teamPtrs{ std::make_shared<const PtrList>() };
+	}
+
+	void PublishTeammatePointers()
+	{
+		auto list = std::make_shared<PtrList>();
+		for (const auto id : KnownTeammates()) {
+			if (auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(id)) {
+				list->push_back(reinterpret_cast<std::uintptr_t>(ref));
+			}
+		}
+		g_teamPtrs.store(std::move(list));
+	}
+
+	bool IsKnownTeammatePtr(const void* a_ptr)
+	{
+		if (!a_ptr) {
+			return false;
+		}
+		const auto list = g_teamPtrs.load();
+		const auto value = reinterpret_cast<std::uintptr_t>(a_ptr);
+		return std::find(list->begin(), list->end(), value) != list->end();
+	}
+
+	std::string Key(RE::FormID a_formID)
+	{
+		if (a_formID == 0) {
+			return {};
+		}
+		if (a_formID >= 0xFF000000) {
+			return std::format("dyn:{:08X}", a_formID);
+		}
+		if (const auto* form = RE::TESForm::LookupByID(a_formID)) {
+			return Key(form);
+		}
+		return std::format("id:{:08X}", a_formID);
+	}
+
+	std::string Key(const RE::TESForm* a_form)
+	{
+		if (!a_form) {
+			return {};
+		}
+		const auto id = a_form->GetFormID();
+		if (a_form->IsDynamicForm()) {
+			return std::format("dyn:{:08X}", id);
+		}
+		const auto* file = a_form->GetFile(0);
+		if (!file) {
+			return std::format("id:{:08X}", id);
+		}
+		return std::format("{}:{:X}", file->GetFilename(), a_form->GetLocalFormID());
+	}
+
+	std::string Json(const RE::TESForm* a_form)
+	{
+		if (!a_form) {
+			return "null";
+		}
+		const char* name = a_form->GetName();
+		return std::format(R"({{"key":"{}","name":"{}"}})", Escape(Key(a_form)), Escape(name ? name : ""));
+	}
+
+	std::string Json(const RE::TESObjectREFR* a_ref)
+	{
+		if (!a_ref) {
+			return "null";
+		}
+		const auto* base = a_ref->GetBaseObject();
+		const char* name = a_ref->GetName();
+		return std::format(R"({{"key":"{}","base":"{}","name":"{}"}})",
+			Escape(Key(a_ref)), Escape(Key(base)), Escape(name ? name : ""));
+	}
+
+	bool IsPlayer(const RE::TESObjectREFR* a_ref)
+	{
+		return a_ref && a_ref == RE::PlayerCharacter::GetSingleton();
+	}
+
+	bool IsPlayerSide(const RE::TESObjectREFR* a_ref)
+	{
+		if (!a_ref) {
+			return false;
+		}
+		if (IsPlayer(a_ref)) {
+			return true;
+		}
+		const auto* actor = a_ref->As<RE::Actor>();
+		if (actor && actor->IsPlayerTeammate()) {
+			NoteTeammate(a_ref);
+			return true;
+		}
+		return false;
+	}
+
+	void NoteTeammate(const RE::TESObjectREFR* a_ref)
+	{
+		if (!a_ref || IsPlayer(a_ref)) {
+			return;
+		}
+		bool added = false;
+		{
+			std::scoped_lock lock(g_teamLock);
+			added = g_team.insert(a_ref->GetFormID()).second;
+		}
+		if (added) {
+			Line("teammate.seen").raw("actor", Json(a_ref)).emit();
+		}
+	}
+
+	std::vector<RE::FormID> KnownTeammates()
+	{
+		std::scoped_lock lock(g_teamLock);
+		return { g_team.begin(), g_team.end() };
+	}
+
+	void ResetTeammates()
+	{
+		{
+			std::scoped_lock lock(g_teamLock);
+			g_team.clear();
+		}
+		g_teamPtrs.store(std::make_shared<const PtrList>());
+	}
+
+	float DistanceToPlayer(const RE::TESObjectREFR* a_ref)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!a_ref || !player) {
+			return -1.0f;
+		}
+		return a_ref->GetPosition().GetDistance(player->GetPosition());
+	}
+}
