@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;background:#ffffff;}
+  svg{display:block}
+  .node{fill:#f8fafa;stroke:#2c5873;stroke-width:2}
+  .node.d{stroke:#9aa6ad;stroke-dasharray:5 4}
+  .node.s{fill:#2c5873}
+  .edge{stroke:#2c5873;stroke-width:2.5;fill:none}
+  .edge.d{stroke:#9aa6ad;stroke-dasharray:6 5}
+  text{font-family:"Malgun Gothic","맑은 고딕",sans-serif;font-size:17px;fill:#1c2226}
+  .sm{font-size:14px;fill:#7b878e}
+  .dis{fill:#8a969d}
+  .acc{fill:#2c5873;font-weight:700}
+</style></head><body>
+<svg width="800" height="260" viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg">
+  <rect width="640" height="210" fill="#ffffff"/>
+  <path class="edge" d="M60 105 H150"/>
+  <path class="edge" d="M190 105 H280"/>
+  <path class="edge d" d="M320 105 C 360 105, 360 45, 400 45"/>
+  <path class="edge" d="M320 105 C 360 105, 360 160, 400 160"/>
+  <path class="edge" d="M440 160 H530"/>
+  <circle class="node s" cx="40" cy="105" r="14"/>
+  <circle class="node" cx="170" cy="105" r="18"/>
+  <circle class="node" cx="300" cy="105" r="18"/>
+  <circle class="node d" cx="420" cy="45" r="18"/>
+  <circle class="node" cx="420" cy="160" r="18"/>
+  <circle class="node" cx="550" cy="160" r="18"/>
+  <text x="40" y="145" text-anchor="middle">새 게임</text>
+  <text x="170" y="145" text-anchor="middle">세이브 1</text>
+  <text x="300" y="145" text-anchor="middle">세이브 2</text>
+  <text class="dis" x="420" y="85" text-anchor="middle">세이브 3</text>
+  <text class="sm" x="420" y="18" text-anchor="middle">동료를 잃고 되돌림 → 외전 재료</text>
+  <text x="420" y="200" text-anchor="middle">세이브 3′</text>
+  <text x="550" y="200" text-anchor="middle">세이브 4</text>
+  <text class="acc" x="585" y="125" text-anchor="end">이 줄기가 본편</text>
+</svg>
+</body></html>

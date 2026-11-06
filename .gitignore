@@ -1,0 +1,27 @@
+# Build output
+build/
+build-*/
+out/
+dist/
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+*.zip
+*.7z
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# vcpkg
+vcpkg_installed/
+
+# Local tool state
+.claude/settings.local.json
+*.log
+*.tmp

@@ -1,0 +1,332 @@
+<title>Tullius Novelist</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: 한 권의 책 머리말처럼 읽히는 단일 칼럼. 넓은 화면에서는 본문 옆에 여백 주석이 붙는다. */
+:root {
+  --bg: #eef1f2;          /* 서리 낀 종이 */
+  --surface: #f8fafa;
+  --ink: #1c2226;         /* 먹 */
+  --muted: #56636b;
+  --rule: #c9d2d6;
+  --accent: #2c5873;      /* 강철빛 청 */
+  --ember: #9a6326;       /* 화톳불 */
+  --discard: #9aa6ad;
+  --font-display: "Gowun Batang", "Nanum Myeongjo", "Batang", serif;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Consolas", monospace;
+  --measure: 40rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #13181b; --surface: #1a2125; --ink: #e2e7ea; --muted: #9aa8b0;
+    --rule: #2e383e; --accent: #8fb8d4; --ember: #d9a35f; --discard: #5d6a71;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #13181b; --surface: #1a2125; --ink: #e2e7ea; --muted: #9aa8b0;
+  --rule: #2e383e; --accent: #8fb8d4; --ember: #d9a35f; --discard: #5d6a71;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.75;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 56px 72px;
+  display: grid;
+  gap: 64px;
+}
+h1, h2, h3 { font-family: var(--font-display); font-weight: 700; text-wrap: balance; line-height: 1.35; margin: 0; }
+h2 { font-size: 1.55rem; }
+h3 { font-size: 1.1rem; }
+p { margin: 0; max-width: var(--measure); }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+section { display: grid; gap: 20px; }
+.lede { font-size: 1.08rem; color: var(--ink); }
+.muted { color: var(--muted); }
+
+/* 머리말 */
+header.hero { display: grid; gap: 18px; padding-top: 8px; }
+.hero h1 { font-size: clamp(2.1rem, 6vw, 3rem); letter-spacing: -0.01em; }
+.hero .en { font-family: var(--font-mono); font-size: 0.95rem; color: var(--muted); letter-spacing: 0.04em; }
+.status {
+  justify-self: start;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 0.85rem;
+  padding: 4px 12px;
+  border: 1px solid var(--ember);
+  color: var(--ember);
+  border-radius: 999px;
+}
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ember); }
+
+/* 견본 장 */
+.folio {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  padding: clamp(20px, 5vw, 40px);
+  display: grid;
+  gap: 16px;
+}
+.folio .chapter-no { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); letter-spacing: 0.1em; }
+.folio h3 { font-size: 1.45rem; }
+.folio p { font-family: var(--font-display); font-size: 1.06rem; line-height: 1.95; }
+.folio p + p { text-indent: 1em; }
+.folio .closing { color: var(--muted); font-style: normal; }
+.caption { font-size: 0.85rem; color: var(--muted); }
+.source-log {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--rule);
+  padding-top: 12px;
+  display: grid;
+  gap: 2px;
+}
+
+/* 흐름 */
+ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 20px; counter-reset: step; }
+ol.steps li { display: grid; grid-template-columns: 2.4rem 1fr; gap: 14px; align-items: start; counter-increment: step; }
+ol.steps li::before {
+  content: counter(step);
+  font-family: var(--font-display); font-weight: 700; font-size: 1.4rem;
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+  text-align: center; line-height: 1.4;
+}
+ol.steps .body { min-width: 0; display: grid; gap: 4px; }
+ol.steps strong { font-weight: 600; }
+.say {
+  font-family: var(--font-display);
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+  padding: 6px 12px;
+  justify-self: start;
+}
+
+/* 특징 목록 */
+dl.features { margin: 0; display: grid; gap: 0; border-top: 1px solid var(--rule); }
+dl.features > div { display: grid; grid-template-columns: minmax(8rem, 12rem) 1fr; gap: 6px 24px; padding: 16px 0; border-bottom: 1px solid var(--rule); }
+dl.features dt { font-weight: 600; }
+dl.features dd { margin: 0; min-width: 0; color: var(--ink); }
+@media (max-width: 560px) { dl.features > div { grid-template-columns: 1fr; } }
+
+/* 계보 그림 */
+.figure { overflow-x: auto; }
+.figure svg { display: block; width: 100%; min-width: 520px; height: auto; }
+.lin-node { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
+.lin-node.discard { stroke: var(--discard); stroke-dasharray: 4 3; }
+.lin-node.start { fill: var(--accent); }
+.lin-edge { stroke: var(--accent); stroke-width: 2; fill: none; }
+.lin-edge.discard { stroke: var(--discard); stroke-dasharray: 5 4; }
+.lin-label { fill: var(--ink); font-family: var(--font-body); font-size: 13px; }
+.lin-label.small { fill: var(--muted); font-size: 11.5px; }
+.lin-label.discard { fill: var(--discard); }
+.lin-label.accent { fill: var(--accent); font-weight: 600; }
+
+/* 표 */
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); }
+table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 0.93rem; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; background: var(--surface); }
+tr:last-child td { border-bottom: 0; }
+.pill { display: inline-block; font-size: 0.78rem; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.yes { color: var(--accent); }
+.pill.manual { color: var(--muted); }
+.pill.no { color: var(--ember); }
+
+/* 로드맵 */
+ol.roadmap { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-left: 2px solid var(--rule); }
+ol.roadmap li { position: relative; padding: 0 0 18px 22px; display: grid; gap: 2px; }
+ol.roadmap li::before {
+  content: ""; position: absolute; left: -7px; top: 8px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--bg); border: 2px solid var(--rule);
+}
+ol.roadmap li.now::before { border-color: var(--ember); background: var(--ember); }
+ol.roadmap .phase { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+ol.roadmap li.now .phase { color: var(--ember); }
+
+/* 묻고 답하기 */
+.faq { display: grid; gap: 0; border-top: 1px solid var(--rule); }
+.faq details { border-bottom: 1px solid var(--rule); padding: 14px 0; }
+.faq summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; gap: 10px; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before { content: "+"; font-family: var(--font-mono); color: var(--accent); width: 1rem; flex: none; }
+.faq details[open] summary::before { content: "−"; }
+.faq details p { margin-top: 8px; padding-left: 26px; color: var(--ink); }
+
+/* 의견 */
+.ask { background: var(--surface); border: 1px solid var(--rule); padding: 24px; display: grid; gap: 12px; }
+.ask ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 6px; }
+
+footer { display: grid; gap: 6px; font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 20px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .faq details[open] p { animation: fade 0.2s ease-out; }
+  @keyframes fade { from { opacity: 0.4; } to { opacity: 1; } }
+}
+</style>
+
+<div class="page">
+
+  <header class="hero">
+    <span class="status">설계 단계 · 아직 배포 전</span>
+    <h1>툴리우스 소설가</h1>
+    <span class="en">Tullius Novelist · Skyrim SE/AE SKSE</span>
+    <p class="lede">평소처럼 스카이림을 하고 저장만 하세요. 그동안의 모험을 AI가 장편 소설로 엮고, 완성된 장은 게임 안에서 책으로 읽을 수 있습니다.</p>
+    <p class="muted">일지나 로그를 보여 주는 모드가 아닙니다. 퀘스트, 전투, 동료, 여정을 골라 장을 나누고, 읽을 맛이 있는 한국어 소설로 쓰는 것이 목표입니다. 지금은 설계를 마치고 검증을 준비하는 단계라서, 툴챈 여러분의 의견을 먼저 듣고 싶어 소개 글을 올립니다.</p>
+  </header>
+
+  <section aria-labelledby="sample-title">
+    <span class="eyebrow">이런 글이 나옵니다</span>
+    <h2 id="sample-title">견본 한 장</h2>
+    <article class="folio">
+      <span class="chapter-no">제2장</span>
+      <h3>서쪽 탑에 내려앉은 재</h3>
+      <p>서부 감시탑은 이미 반쯤 무너져 있었다. 돌무더기 사이로 경비병들의 외침이 흩어졌고, 그 위로 거대한 그림자가 몇 번이고 지나갔다. 미르물니어가 날개를 접으며 땅에 내려앉자 주변의 공기가 쇳소리를 내며 갈라졌다.</p>
+      <p>부러진 화살과 그을린 방패 사이를 구르며 비늘 틈을 노렸다. 마지막 일격이 들어가자 쓰러진 용은 피를 흘리는 대신 불길처럼 타올랐다. 살과 가죽이 재가 되어 흩어지고, 남은 빛이 소용돌이치며 숨으로 밀려들었다. 뼈마디마다 낯선 울림이 새겨졌다. 삼킨 것이 짐승의 목숨만은 아니었다.</p>
+      <p>드래곤스리치로 돌아가 보고를 마치자, 영주는 새 사냥꾼 곁에 리디아를 붙였다. 리디아는 짧게 고개를 숙이고 방패 끈을 고쳐 맸다. 대답 대신 고개를 한 번 끄덕였다. 그것으로 충분했다.</p>
+      <p class="closing">탑 위로 피어오르던 연기는 밤이 깊도록 가라앉지 않았다.</p>
+      <div class="source-log" aria-label="이 장의 바탕이 된 기록">
+        <span>바탕이 된 기록: 서부 감시탑 도착 · 드래곤 처치(미르물니어) · 첫 드래곤 영혼 흡수</span>
+        <span>· 화이트런 복귀 · 동료 합류(리디아)</span>
+      </div>
+    </article>
+    <p class="caption">설명용으로 쓴 예시 문단입니다. 실제 결과는 플레이 기록, 고른 문체, 사용하는 AI 앱에 따라 달라집니다.</p>
+  </section>
+
+  <section aria-labelledby="how-title">
+    <span class="eyebrow">작동 방식</span>
+    <h2 id="how-title">플레이어가 할 일은 세 가지뿐</h2>
+    <ol class="steps">
+      <li><div class="body"><strong>평소처럼 플레이하고 저장합니다.</strong><span class="muted">게임 안에서는 아무것도 묻지 않습니다. 장을 나누라거나 메모를 남기라는 창도 없습니다. 저장할 때마다 그 사이의 사건이 기록됩니다.</span></div></li>
+      <li><div class="body"><strong>쓰고 있는 AI 앱에서 작가 키트 폴더를 열고 말합니다.</strong><span class="say">"내 이야기 이어서 써 줘"</span><span class="muted">앱의 AI가 키트의 도구로 기록을 읽고, 장을 나눠 소설을 씁니다. 장을 어디서 끊을지, 무엇을 길게 쓰고 무엇을 덜어 낼지는 AI가 정합니다.</span></div></li>
+      <li><div class="body"><strong>게임 안 서재에서 새 장을 읽습니다.</strong><span class="muted">새 장이 들어오면 전투가 끝난 조용한 순간에 한 줄 알림이 뜹니다. 읽지 않은 장에는 표시가 남습니다.</span></div></li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="lineage-title">
+    <span class="eyebrow">세이브 계보</span>
+    <h2 id="lineage-title">되돌린 진행은 소설에서 빠집니다</h2>
+    <p>죽어서 예전 세이브를 불러오거나 마음이 바뀌어 다른 선택을 했다면, 이어서 플레이한 쪽이 이야기의 정사가 됩니다. 세이브마다 어느 세이브에서 이어졌는지를 기록하기 때문입니다. 버린 진행은 지우지 않고 보관해 두었다가, 원할 때 "가보지 않은 길" 외전으로 쓸 수 있습니다.</p>
+    <div class="figure" role="img" aria-label="세이브 계보 그림: 세이브 2에서 이어진 세이브 3은 버려지고, 세이브 2를 다시 불러와 이어 간 세이브 3'과 세이브 4가 정사가 된다.">
+      <svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg">
+        <path class="lin-edge" d="M60 105 H150"/>
+        <path class="lin-edge" d="M190 105 H280"/>
+        <path class="lin-edge discard" d="M320 105 C 360 105, 360 45, 400 45"/>
+        <path class="lin-edge" d="M320 105 C 360 105, 360 160, 400 160"/>
+        <path class="lin-edge" d="M440 160 H530"/>
+        <circle class="lin-node start" cx="40" cy="105" r="14"/>
+        <circle class="lin-node" cx="170" cy="105" r="18"/>
+        <circle class="lin-node" cx="300" cy="105" r="18"/>
+        <circle class="lin-node discard" cx="420" cy="45" r="18"/>
+        <circle class="lin-node" cx="420" cy="160" r="18"/>
+        <circle class="lin-node" cx="550" cy="160" r="18"/>
+        <text class="lin-label" x="40" y="145" text-anchor="middle">새 게임</text>
+        <text class="lin-label" x="170" y="145" text-anchor="middle">세이브 1</text>
+        <text class="lin-label" x="300" y="145" text-anchor="middle">세이브 2</text>
+        <text class="lin-label discard" x="420" y="85" text-anchor="middle">세이브 3</text>
+        <text class="lin-label small discard" x="420" y="18" text-anchor="middle">동료를 잃고 되돌림 → 외전 재료</text>
+        <text class="lin-label" x="420" y="200" text-anchor="middle">세이브 3′</text>
+        <text class="lin-label" x="550" y="200" text-anchor="middle">세이브 4</text>
+        <text class="lin-label accent" x="580" y="125" text-anchor="end">이 줄기가 본편</text>
+      </svg>
+    </div>
+  </section>
+
+  <section aria-labelledby="feat-title">
+    <span class="eyebrow">무엇이 다른가</span>
+    <h2 id="feat-title">설계에서 지키는 것들</h2>
+    <dl class="features">
+      <div><dt>게임 안 무간섭</dt><dd>플레이 중에는 확인 창도 선택지도 없습니다. 기록은 백그라운드에서 짧게 복사만 하고, 무거운 일은 게임 밖 프로그램이 합니다.</dd></div>
+      <div><dt>쓰고 있는 구독 그대로</dt><dd>Claude, ChatGPT, Gemini 구독으로 씁니다. API 키는 필요 없습니다. 모드가 AI 앱을 몰래 실행하지 않습니다. 여러분이 앱에서 직접 시키는 방식입니다.</dd></div>
+      <div><dt>없는 사건은 쓰지 않음</dt><dd>기록에 없는 전투, 인물, 죽음을 지어내지 않도록 작가 지침을 주고, 저장하기 전에 결과를 검사합니다. 각색하는 것은 풍경, 동작, 분위기 같은 표현입니다.</dd></div>
+      <div><dt>한국어다운 문장</dt><dd>지명과 인명은 한국어 패치 표기를 먼저 찾아 씁니다. 예를 들어 Darkwater Crossing은 "다크워터 갈림길"입니다. "레벨업", "퀘스트" 같은 게임 용어, 번역투 대명사, 무협 어휘는 피하도록 합니다.</dd></div>
+      <div><dt>동료가 조연이 됨</dt><dd>함께 다닌 동료의 전투 기록과 대사를 바탕으로, 관계가 장을 거듭하며 깊어지도록 씁니다.</dd></div>
+      <div><dt>성인 콘텐츠는 선택</dt><dd>"제외"(기본)와 "암시만" 중에서 고릅니다. 감지는 별도로 설치하는 어댑터가 맡고, 본체에는 관련 코드가 없습니다. AI 서비스 정책상 노골적인 묘사는 제공하지 않습니다.</dd></div>
+    </dl>
+  </section>
+
+  <section aria-labelledby="apps-title">
+    <span class="eyebrow">지원 예정 앱</span>
+    <h2 id="apps-title">어떤 구독으로 쓸 수 있나</h2>
+    <p>작가 키트는 툴리우스 번역기의 "구독 앱으로 번역하기"와 같은 구조입니다. 번역기에서는 세 앱 모두로 실제 번역을 끝까지 해 봤습니다. 소설가에서도 같은 방식으로 다시 시험할 예정입니다.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>앱</th><th>작가 키트</th><th>비고</th></tr></thead>
+        <tbody>
+          <tr><td>Claude 데스크톱 앱 (Code 탭)</td><td><span class="pill yes">지원 예정</span></td><td>폴더를 열고 처음 한 번 허용하면 됩니다.</td></tr>
+          <tr><td>ChatGPT Codex</td><td><span class="pill yes">지원 예정</span></td><td>폴더를 열고 바로 씁니다. 완전 자동 생성(게임을 끄면 알아서 쓰기)은 OpenAI 공식 경로로 따로 검토 중입니다.</td></tr>
+          <tr><td>Google Antigravity (Gemini)</td><td><span class="pill yes">지원 예정</span></td><td>처음 한 번 연결 스크립트를 실행합니다. 약관상 자동 실행은 하지 않습니다.</td></tr>
+          <tr><td>웹 채팅만 쓰는 경우</td><td><span class="pill manual">파일 첨부</span></td><td>기록 파일을 채팅에 첨부하고, 받은 결과를 키트로 들여옵니다.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">구독마다 사용량 한도가 있습니다. 한 장을 쓰는 데 사용량이 얼마나 드는지는 검증 단계에서 재서 공개하겠습니다.</p>
+  </section>
+
+  <section aria-labelledby="road-title">
+    <span class="eyebrow">진행 상황</span>
+    <h2 id="road-title">로드맵</h2>
+    <ol class="roadmap">
+      <li class="now"><span class="phase">0단계 · 지금</span><strong>검증 실험</strong><span class="muted">이벤트가 실제로 잡히는지, 세이브 계보가 맞는지, 게임 안 책 화면에 한글 장문이 잘 들어가는지, 세 앱에서 한 장을 쓰는 데 드는 사용량</span></li>
+      <li><span class="phase">1단계</span><strong>기록기</strong><span class="muted">SKSE 플러그인, 세이브 계보, 기록 저장소</span></li>
+      <li><span class="phase">2단계</span><strong>작가 키트</strong><span class="muted">세 앱에서 실제 플레이 기록으로 장편 쓰기</span></li>
+      <li><span class="phase">3단계</span><strong>게임 안 서재</strong><span class="muted">읽기 화면, 새 장 알림, 다른 세계선 숨기기</span></li>
+      <li><span class="phase">4단계</span><strong>넓히기</strong><span class="muted">NPC 대사, 문체 고르기, 외전, 웹 채팅 첨부, 성인 어댑터</span></li>
+      <li><span class="phase">5단계</span><strong>배포</strong><span class="muted">Nexus와 툴챈, 소스 공개(GPL)</span></li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="faq-title">
+    <span class="eyebrow">묻고 답하기</span>
+    <h2 id="faq-title">미리 나올 만한 질문</h2>
+    <div class="faq">
+      <details><summary>내 플레이 기록은 어디로 가나요?</summary><p>기록은 내 PC의 문서 폴더에 저장됩니다. 소설을 쓸 때만, 여러분이 고른 AI 앱에 그 구간의 사건 목록이 전달됩니다. 모드가 따로 인터넷에 보내는 것은 없습니다. 나중에 추가할 수도 있는 "완전 자동 생성"은 직접 켜고 로그인한 경우에만 동작합니다.</p></details>
+      <details><summary>이미 진행 중인 세이브에도 쓸 수 있나요?</summary><p>설치한 뒤부터 기록합니다. 처음 불러올 때 현재 레벨, 완료한 퀘스트, 있는 곳을 한 번 모아 두어서 "지금까지의 이야기"를 프롤로그로 쓸 재료로 삼습니다.</p></details>
+      <details><summary>모드를 수천 개 쓰는 환경에서도 괜찮나요?</summary><p>이벤트가 들어오면 필요한 값만 복사하고 바로 돌아오도록 설계했습니다. 실제 영향은 대형 모드팩 환경에서 측정한 뒤 수치로 공개하겠습니다.</p></details>
+      <details><summary>Chronicle ChatBox, SkyrimNet과는 뭐가 다른가요?</summary><p>Chronicle은 대사와 알림을 채팅창처럼 모아 보여 주는 모드이고, SkyrimNet은 NPC가 AI로 대화하고 기억하는 프레임워크입니다. 툴리우스 소설가는 플레이 한 판을 장편 소설 한 권으로 쓰는 데만 집중합니다.</p></details>
+      <details><summary>소스는 공개하나요?</summary><p>네. GPL-3.0으로 공개할 예정입니다.</p></details>
+    </div>
+  </section>
+
+  <section class="ask" aria-labelledby="ask-title">
+    <h2 id="ask-title">의견을 듣고 싶습니다</h2>
+    <ul>
+      <li>원하는 문체가 있나요? 3인칭 소설, 동료의 수기, 후대 학자의 연대기, 음유시인의 노래 중에서요.</li>
+      <li>게임 안 책 화면은 바닐라 책 모양이 좋나요, 목차와 검색이 있는 전용 화면이 좋나요?</li>
+      <li>주로 쓰는 AI 구독은 어느 쪽인가요?</li>
+      <li>이런 장면은 꼭 소설에 들어갔으면 좋겠다는 것이 있다면 알려 주세요.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>툴리우스 시리즈: <a href="https://www.nexusmods.com/skyrimspecialedition/mods/172272">Tullius CTD Logger</a> · <a href="https://www.nexusmods.com/skyrimspecialedition/mods/172458">Tullius Widgets</a> · 툴리우스 번역기</span>
+    <span>이 글의 내용은 설계 초안 기준이며, 검증 결과에 따라 바뀔 수 있습니다.</span>
+  </footer>
+
+</div>
