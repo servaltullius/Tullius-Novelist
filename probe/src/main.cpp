@@ -43,6 +43,8 @@ namespace
 	{
 		probe::damage::InstallOnce();
 		probe::events::AttachPlayerGraph();
+		probe::events::ResetEnemyGraphs();
+		probe::damage::ResetDotSources();
 		probe::poller::ResetBaseline();
 		probe::forms::ResetTeammates();
 	}

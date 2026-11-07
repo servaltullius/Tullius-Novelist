@@ -1,4 +1,5 @@
 #include "Poller.h"
+#include "DamageHook.h"
 #include "Events.h"
 #include "Forms.h"
 #include "Out.h"
@@ -86,6 +87,8 @@ namespace probe::poller
 
 			forms::PublishTeammatePointers();
 			events::EnsurePlayerGraph();
+			events::EnsureEnemyGraphs();
+			damage::FlushDotSources();
 
 			for (const auto id : forms::KnownTeammates()) {
 				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(id);

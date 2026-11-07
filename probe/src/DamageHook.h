@@ -7,4 +7,11 @@ namespace probe::damage
 	// (for example CalamityAffixes, which skips its own hook when the slot is already patched)
 	// are in place first. Always chains to whatever the slot held before.
 	void InstallOnce();
+
+	// Poll task: for each player-side target that took attacker-less damage under 0.5 in the last
+	// window, reports the tick count, summed damage and the health-touching active effects
+	// (at most once per 5 s per target). The hook itself only counts.
+	void FlushDotSources();
+	// Clears the per-target counters. Call after each new game / load.
+	void ResetDotSources();
 }

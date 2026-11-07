@@ -74,6 +74,68 @@ namespace probe::damage
 			return a_actor;
 		}
 
+		// Attacker-less damage below this size arrives every frame (B run: 7,298 of 7,545 calls).
+		// The hook only counts it; the poll task lists the target's health effects once per window.
+		constexpr float  kDotThreshold = 0.5f;
+		constexpr double kDotWindowMs = 5000.0;
+
+		struct DotState
+		{
+			std::uint64_t ticks{ 0 };       // since the last report
+			double        total{ 0.0 };     // summed damage since the last report (negative)
+			double        lastReportMs{ -kDotWindowMs };
+		};
+
+		std::mutex                               g_dotLock;
+		std::unordered_map<RE::FormID, DotState> g_dot;
+
+		void NoteDot(RE::FormID a_target, float a_damage)
+		{
+			std::scoped_lock lock(g_dotLock);
+			auto& state = g_dot[a_target];
+			++state.ticks;
+			state.total += static_cast<double>(a_damage);
+		}
+
+		// Same policy as Line::num: NaN/inf become null so the line stays valid JSON.
+		std::string Number(float a_value)
+		{
+			return std::isfinite(a_value) ? std::format("{}", a_value) : std::string("null");
+		}
+
+		// Walks the active effects through the game's own visitor, which takes the magic target's
+		// lock; actor updates run on several job threads, so the raw list is not iterated directly.
+		class HealthEffectVisitor final : public RE::MagicTarget::ForEachActiveEffectVisitor
+		{
+		public:
+			RE::BSContainer::ForEachResult Accept(RE::ActiveEffect* a_effect) override
+			{
+				const auto* base = a_effect ? a_effect->GetBaseObject() : nullptr;
+				if (base && (base->data.primaryAV == RE::ActorValue::kHealth || base->data.secondaryAV == RE::ActorValue::kHealth)) {
+					json += std::format(
+						R"({}{{"effect":"{}","spell":"{}","archetype":{},"magnitude":{},"detrimental":{},"inactive":{},"elapsed":{},"duration":{}}})",
+						json.size() > 1 ? "," : "", Escape(forms::Key(base)), Escape(forms::Key(a_effect->spell)),
+						static_cast<int>(base->GetArchetype()), Number(a_effect->magnitude), base->IsDetrimental() ? "true" : "false",
+						a_effect->flags.any(RE::ActiveEffect::Flag::kInactive) ? "true" : "false", Number(a_effect->elapsedSeconds),
+						Number(a_effect->duration));
+				}
+				return RE::BSContainer::ForEachResult::kContinue;
+			}
+
+			std::string json{ "[" };
+		};
+
+		std::string HealthEffectsJson(RE::Actor* a_actor)
+		{
+			auto* magicTarget = a_actor ? a_actor->AsMagicTarget() : nullptr;
+			if (!magicTarget) {
+				return "[]";
+			}
+			HealthEffectVisitor visitor;
+			magicTarget->VisitEffects(visitor);
+			return visitor.json + "]";
+		}
+
 		float Health(RE::Actor* a_actor)
 		{
 			return a_actor ? a_actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth) : -1.0f;
@@ -133,6 +195,9 @@ namespace probe::damage
 				a_original(a_this, a_attacker, a_damage);
 			}
 			perf::Scope scope("damage.post");
+			if (!attacker && a_damage < 0.0f && a_damage > -kDotThreshold) {
+				NoteDot(target->GetFormID(), a_damage);
+			}
 			const float after = Health(target);
 			const auto  caller = ModuleOf(a_caller);
 			// If another plugin hooked the slot after us, its DLL is what we see as the caller.
@@ -186,6 +251,46 @@ namespace probe::damage
 				.flag("chained", a_original != nullptr)
 				.emit();
 		}
+	}
+
+	void FlushDotSources()
+	{
+		struct Report
+		{
+			RE::FormID    id;
+			std::uint64_t ticks;
+			double        total;
+		};
+		std::vector<Report> due;
+		const double        now = out::ElapsedMs();
+		{
+			std::scoped_lock lock(g_dotLock);
+			for (auto& [id, state] : g_dot) {
+				if (state.ticks == 0 || now - state.lastReportMs < kDotWindowMs) {
+					continue;
+				}
+				due.push_back({ id, state.ticks, state.total });
+				state.ticks = 0;
+				state.total = 0.0;
+				state.lastReportMs = now;
+			}
+		}
+		for (const auto& report : due) {
+			auto* actor = RE::TESForm::LookupByID<RE::Actor>(report.id);
+			Line("damage.dotSources")
+				.raw("target", forms::Json(actor))
+				.str("id", forms::Key(report.id))
+				.num("ticks", report.ticks)
+				.num("total", report.total)
+				.raw("healthEffects", HealthEffectsJson(actor))
+				.emit();
+		}
+	}
+
+	void ResetDotSources()
+	{
+		std::scoped_lock lock(g_dotLock);
+		g_dot.clear();
 	}
 
 	void InstallOnce()

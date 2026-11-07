@@ -140,6 +140,21 @@ namespace probe::forms
 		if (!a_ref || !player) {
 			return -1.0f;
 		}
+		// Coordinates are comparable only inside one space: the same interior cell, or the same
+		// worldspace. Otherwise an unrelated cell whose local coordinates happen to be close
+		// would count as "near the player".
+		const auto* cell = a_ref->GetParentCell();
+		const auto* playerCell = player->GetParentCell();
+		if (!cell || !playerCell) {
+			return -1.0f;
+		}
+		const bool interior = cell->IsInteriorCell();
+		if (interior != playerCell->IsInteriorCell()) {
+			return -1.0f;
+		}
+		if (interior ? cell != playerCell : a_ref->GetWorldspace() != player->GetWorldspace()) {
+			return -1.0f;
+		}
 		return a_ref->GetPosition().GetDistance(player->GetPosition());
 	}
 }

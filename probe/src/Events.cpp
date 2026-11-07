@@ -149,6 +149,72 @@ namespace probe::events
 
 		PlayerGraphSink g_playerGraphSink;
 
+		// Graphs of actors fighting the player side. A successful parry (Parry for All) cancels the
+		// attacker's hit and staggers the attacker, so it shows on the attacker's graph, not ours.
+		constexpr std::size_t kMaxEnemyGraphs = 32;
+		CountMap              g_enemyAnimCounts;  // guarded by g_countLock
+
+		std::mutex                     g_enemyLock;
+		std::unordered_set<RE::FormID> g_enemyPending;   // queued by combat events (any thread)
+		std::unordered_set<RE::FormID> g_enemyAttached;  // touched only by the poll task
+		bool                           g_enemyFullLogged = false;
+
+		class EnemyGraphSink final : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
+		{
+		public:
+			Ctrl ProcessEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override
+			{
+				if (!a_event) {
+					return Ctrl::kContinue;
+				}
+				perf::Scope scope("anim.enemy");
+				const std::string_view tag = a_event->tag.c_str() ? a_event->tag.c_str() : "";
+				bool first = false;
+				{
+					std::scoped_lock lock(g_countLock);
+					first = Count(g_enemyAnimCounts, tag);
+				}
+				if (first || IsInterestingTag(tag)) {
+					// Runs on animation threads: record only the form ID (no name or extra-data reads).
+					// The probe.enemyGraph attach line carries the full identity for the same ID.
+					const auto id = a_event->holder ? a_event->holder->GetFormID() : 0u;
+					Line(first ? "anim.enemy.first" : "anim.enemy")
+						.str("actor", std::format("{:08X}", id))
+						.str("tag", tag)
+						.str("payload", a_event->payload.c_str() ? a_event->payload.c_str() : "")
+						.emit();
+				}
+				return Ctrl::kContinue;
+			}
+		};
+
+		EnemyGraphSink g_enemyGraphSink;
+
+		// Parry for All marks a parry by placing ParryAll.esp explosions (Normal / Perfect, shield or
+		// weapon, player or NPC variants) and a ParryMarker activator. Explosions in general are kept
+		// too, so other hit-effect mods show up. Only references near the player are logged.
+		bool IsWatchedPlacement(const RE::TESObjectREFR* a_ref)
+		{
+			const auto* base = a_ref ? a_ref->GetBaseObject() : nullptr;
+			if (!base) {
+				return false;
+			}
+			if (base->GetFormType() == RE::FormType::Explosion) {
+				return true;
+			}
+			const auto* file = base->GetFile(0);
+			if (!file) {
+				return false;
+			}
+			// Called for every reference that loads; compare without allocating.
+			constexpr std::string_view key = "parry";
+			const std::string_view     name = file->GetFilename();
+			const auto                 lower = [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+			return std::ranges::search(name, key, {}, lower, {}).begin() != name.end();
+		}
+
+		constexpr float kPlacementRadius = 3000.0f;
+
 		// --- handlers -------------------------------------------------------------------------
 
 		void OnQuestStartStop(const RE::TESQuestStartStopEvent& e)
@@ -211,6 +277,36 @@ namespace probe::events
 			}
 			Line("combat.state").raw("actor", forms::Json(e.actor.get())).raw("target", forms::Json(e.targetActor.get()))
 				.num("state", static_cast<std::int64_t>(e.newState.get())).emit();
+
+			// An opponent of the player side: watch its graph (attached later by the poll task).
+			const auto* actor = e.actor.get();
+			if (actor && e.newState.get() != RE::ACTOR_COMBAT_STATE::kNone &&
+				!forms::IsPlayerSide(actor) && forms::IsPlayerSide(e.targetActor.get())) {
+				std::scoped_lock lock(g_enemyLock);
+				g_enemyPending.insert(actor->GetFormID());
+			}
+		}
+
+		void LogPlacement(const char* a_event, const RE::TESObjectREFR* a_ref, bool a_flag, const char* a_flagName)
+		{
+			if (!IsWatchedPlacement(a_ref)) {
+				return;
+			}
+			const float dist = forms::DistanceToPlayer(a_ref);
+			if (dist < 0.0f || dist > kPlacementRadius) {
+				return;
+			}
+			Line(a_event).raw("ref", forms::Json(a_ref)).flag(a_flagName, a_flag).num("dist", static_cast<double>(dist)).emit();
+		}
+
+		void OnObjectLoaded(const RE::TESObjectLoadedEvent& e)
+		{
+			LogPlacement("object.loaded", RE::TESForm::LookupByID<RE::TESObjectREFR>(e.formID), e.loaded, "loaded");
+		}
+
+		void OnMoveAttach(const RE::TESMoveAttachDetachEvent& e)
+		{
+			LogPlacement("object.attach", e.movedRef.get(), e.isCellAttached, "attached");
 		}
 
 		void OnDeath(const RE::TESDeathEvent& e)
@@ -480,6 +576,8 @@ namespace probe::events
 		AddToHolder<RE::TESSwitchRaceCompleteEvent>("race.switch", OnSwitchRace);
 		AddToHolder<RE::TESPlayerBowShotEvent>("bow.shot", OnBowShot);
 		AddToHolder<RE::TESBookReadEvent>("book.readRef", OnBookRead);
+		AddToHolder<RE::TESObjectLoadedEvent>("object.loaded", OnObjectLoaded);
+		AddToHolder<RE::TESMoveAttachDetachEvent>("object.attach", OnMoveAttach);
 
 		AddToSource<RE::QuestStatus::Event>("quest.status", RE::QuestStatus::GetEventSource(), OnQuestStatus);
 		AddToSource<RE::ObjectiveState::Event>("quest.objective", RE::ObjectiveState::GetEventSource(), OnObjective);
@@ -540,6 +638,65 @@ namespace probe::events
 		}
 	}
 
+	void EnsureEnemyGraphs()
+	{
+		std::scoped_lock lock(g_enemyLock);
+
+		// Drop opponents that left the fight. A graph destroyed with its 3D takes our sink with it,
+		// so removing from a reloaded graph is only a no-op, never a dangling call.
+		for (auto it = g_enemyAttached.begin(); it != g_enemyAttached.end();) {
+			auto*      actor = RE::TESForm::LookupByID<RE::Actor>(*it);
+			const bool keep = actor && actor->Is3DLoaded() && !actor->IsDead() && actor->IsInCombat();
+			if (keep) {
+				++it;
+				continue;
+			}
+			if (actor) {
+				actor->RemoveAnimationGraphEventSink(&g_enemyGraphSink);
+			}
+			Line("probe.enemyGraph").str("op", "detach").str("id", std::format("{:08X}", *it)).raw("actor", forms::Json(actor)).emit();
+			it = g_enemyAttached.erase(it);
+		}
+
+		for (const auto id : g_enemyPending) {
+			auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+			if (!actor || !actor->Is3DLoaded() || actor->IsDead()) {
+				continue;
+			}
+			const bool known = g_enemyAttached.contains(id);
+			if (!known && g_enemyAttached.size() >= kMaxEnemyGraphs) {
+				if (!g_enemyFullLogged) {
+					Line("probe.enemyGraph").str("op", "full").num("max", static_cast<std::uint64_t>(kMaxEnemyGraphs)).emit();
+					g_enemyFullLogged = true;
+				}
+				continue;
+			}
+			// Remove first: a repeated combat event (searching -> combat) must not register twice.
+			actor->RemoveAnimationGraphEventSink(&g_enemyGraphSink);
+			const bool ok = actor->AddAnimationGraphEventSink(&g_enemyGraphSink);
+			if (ok) {
+				g_enemyAttached.insert(id);
+			}
+			if (!known || !ok) {
+				Line("probe.enemyGraph").str("op", "attach").str("id", std::format("{:08X}", id)).raw("actor", forms::Json(actor))
+					.flag("ok", ok).emit();
+			}
+		}
+		g_enemyPending.clear();
+		if (g_enemyAttached.size() < kMaxEnemyGraphs) {
+			g_enemyFullLogged = false;
+		}
+	}
+
+	void ResetEnemyGraphs()
+	{
+		// After a load every old actor and graph is gone; the IDs alone could match new references.
+		std::scoped_lock lock(g_enemyLock);
+		g_enemyPending.clear();
+		g_enemyAttached.clear();
+		g_enemyFullLogged = false;
+	}
+
 	void DumpCounters()
 	{
 		std::uint64_t suppressed = 0;
@@ -548,19 +705,23 @@ namespace probe::events
 			suppressed = g_effectSuppressed;
 			g_effectSuppressed = 0;
 		}
-		std::string anim = "{";
-		std::string mods = "{";
+		const auto toJson = [](const CountMap& a_map) {
+			std::string json = "{";
+			for (const auto& [name, n] : a_map) {
+				json += std::format("{}\"{}\":{}", json.size() > 1 ? "," : "", Escape(name), n);
+			}
+			return json + "}";
+		};
+		std::string anim;
+		std::string enemyAnim;
+		std::string mods;
 		{
 			std::scoped_lock lock(g_countLock);
-			for (const auto& [tag, n] : g_animCounts) {
-				anim += std::format("{}\"{}\":{}", anim.size() > 1 ? "," : "", Escape(tag), n);
-			}
-			for (const auto& [name, n] : g_modEventCounts) {
-				mods += std::format("{}\"{}\":{}", mods.size() > 1 ? "," : "", Escape(name), n);
-			}
+			anim = toJson(g_animCounts);
+			enemyAnim = toJson(g_enemyAnimCounts);
+			mods = toJson(g_modEventCounts);
 		}
-		anim += "}";
-		mods += "}";
-		Line("counts").raw("animTags", anim).raw("modEvents", mods).num("effectApplySuppressed", suppressed).emit();
+		Line("counts").raw("animTags", anim).raw("enemyAnimTags", enemyAnim).raw("modEvents", mods)
+			.num("effectApplySuppressed", suppressed).emit();
 	}
 }

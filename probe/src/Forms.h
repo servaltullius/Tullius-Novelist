@@ -20,6 +20,8 @@ namespace probe::forms
 	std::vector<RE::FormID> KnownTeammates();
 	void ResetTeammates();
 
+	// Distance in game units, or -1 when unknown or not in the player's space
+	// (different interior cell, interior vs exterior, or another worldspace).
 	float DistanceToPlayer(const RE::TESObjectREFR* a_ref);
 
 	// Main thread: resolves known teammate form IDs to object addresses for the damage hook.
