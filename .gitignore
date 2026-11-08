@@ -25,3 +25,6 @@ vcpkg_installed/
 .claude/settings.local.json
 *.log
 *.tmp
+
+# Local trial materials (real play records)
+trials/

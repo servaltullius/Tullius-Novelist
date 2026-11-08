@@ -72,7 +72,7 @@
 | 치명타(게임 판정) | 기록 | `CriticalHit::Event` | 대상 필드가 없다. 직후의 적중과 연결한다. **(v0.3)** 0단계에서 한 번도 오지 않았다(미확인). |
 | 큰 피해(우리 판정) | 기록 | 보고값 ÷ 최대 체력 **(v0.3)** | 피해 훅이 깎인 뒤의 통지라서 보고값을 쓴다. |
 | 막기 | 기록 | `kHitBlocked`, 방어 자세 시작·종료 **(v0.2)** | `percentBlocked`는 최종 결과라는 보장이 없어 참고값으로만 둔다. **(v0.3)** 막은 적중에는 플래그가 붙었다(실측). 방어 자세 태그(`blockStartOut`/`blockStop`) 구간은 "막으려 했다"는 문맥으로 쓰고, 막은 횟수로 세지 않는다. 방패로 막은 화살은 플레이어 → 플레이어 화살 이동으로도 보인다(추정). |
-| 패링 성공 **(v0.3)** | 기록 | 모드 신호(17절) | 패링은 막은 쪽에 오는 `ParryAll.esp` 폭발 적중이다(근접과 화살이 같다). 실측 20번 모두 완벽 패링이라 패링은 한 종류로 기록하고 등급은 덧붙이기만 한다. 실패는 따로 오지 않는다(그냥 막기나 피격). |
+| 패링 성공 **(v0.3)** | 기록 | 모드 신호(17절) | 패링은 막은 쪽에 오는 `ParryAll.esp` 폭발 적중이다(근접과 화살이 같다). 실측 24번 모두 완벽 패링이라 패링은 한 종류로 기록하고 등급은 덧붙이기만 한다. 실패는 따로 오지 않는다(그냥 막기나 피격). |
 | 가드 브레이크 **(v0.3)** | 2차 | 모드 신호(17절) | `Maxsu_GuardBreakStart/Stop`이 0단계에서 관측되지 않았다. |
 | 회피 | 추정 | 모드 신호(17절) | 요청, 시작, 무적 구간, 종료를 나눈다. 회피 신호만으로 "피했다"고 단정하지 않는다. **(v0.3)** "피했다"를 판정하려면 적의 공격 시점이 필요하다. 적의 애니메이션 그래프(`weaponSwing`, `HitFrame`)를 구독한다. |
 | 경직, 넉다운, 일어나기 **(v0.2)** | 기록 | 모드 경직 신호(17절), 그래프 상태 | `HitData::stagger`는 Maxsu Poise가 0으로 바꾸므로 쓰지 않는다. **(v0.3)** 플레이어와 적 그래프 모두에서 `MSL_*` 태그로 확인했다. |
@@ -112,7 +112,7 @@
 | 흡혈귀화, 늑대인간화 | 기록 | 질병 진행과 퀘스트, 종족 전환 | 이야기의 큰 전환점이다. |
 | 변신(늑대인간, 흡혈 군주) | 기록 | `TESSwitchRaceCompleteEvent` + 이전·이후 종족 캐시 **(v0.2)** | 이 이벤트만으로는 영구 흡혈귀화와 일시 변신을 구분할 수 없다. |
 | 흡혈, 늑대인간 포식 **(v0.2)** | 기록 | 효과, 통계(`Necks Bitten`, `Mauls`) | |
-| 축복(신전 제단) | 기록 | `TESActivateEvent`(제단) + 축복 효과 적용 확인 **(v0.2)** | 활성화만으로는 확정하지 않는다. **(v0.3)** 모드팩에서는 바닐라 축복 효과 대신 `Archon.esp` 효과 7개가 걸렸다. 축복 효과 목록은 어댑터로 둔다(17절). 그 효과가 축복인지는 확인하지 못했다. |
+| 축복(신전 제단) | 기록 | `TESActivateEvent`(제단) + 축복 효과 적용 확인 **(v0.2)** | 활성화만으로는 확정하지 않는다. **(v0.3)** 모드팩에서는 바닐라 축복 효과 대신 `Archon.esp`의 키나레스 제단 효과("키나레스의 추종자", "키나레스의 길" 등)가 걸렸다. 축복 효과 목록은 어댑터로 둔다(17절). |
 | 수호석 선택 | 기록 | `TESActivateEvent` + 능력 변화 확인 **(v0.2)** | 눌렀다가 취소한 것을 선택으로 기록하지 않는다. |
 | 생존 모드의 배고픔, 추위, 피로 | 기록 (결정 D) | 생존 모드 전역값 폴링 | 생존 모드를 켠 사람만, 심한 상태 진입과 회복만 기록한다. 모드팩의 Survival Mode Improved, Starfrost가 단계를 바꾸므로 바닐라 임계값을 고정하지 않는다. |
 | 체력, 매지카, 기력의 평소 상태 | 안 함 | | 위기 판정에만 쓴다. |
@@ -274,7 +274,7 @@
 
 | 모드 | 관측한 신호 | 기록기에서의 뜻 |
 |---|---|---|
-| Parry for All | 막은 쪽에 오는 공격자 없는 `TESHitEvent` 4건, `source` = `ParryAll.esp` 폭발(에디터 ID `Parry{Perfect,Normal}{Player,NPC}{,Shield}{,2,3,Sound}`) | **패링 성공**. 근접과 화살이 같다. 실측 20번 모두 `Perfect`. 이 적중은 공격 적중으로 세지 않는다. 폭발 배치 자체는 `TESObjectLoadedEvent`·`TESMoveAttachDetachEvent`로 오지 않았다. |
+| Parry for All | 막은 쪽에 오는 공격자 없는 `TESHitEvent` 4건, `source` = `ParryAll.esp` 폭발(에디터 ID `Parry{Perfect,Normal}{Player,NPC}{,Shield}{,2,3,Sound}`) | **패링 성공**. 근접과 화살이 같다. 실측 24번 모두 `Perfect`. 이 적중은 공격 적중으로 세지 않는다. 폭발 배치 자체는 `TESObjectLoadedEvent`·`TESMoveAttachDetachEvent`로 오지 않았다. |
 | Modern Stagger Lock | `MSL_{Small,Medium,Large,Largest}StaggerInitiateOpen`, `…TriggerOpen`, `MSL_RecovWinOpen/Close`, `staggerStop` | 경직 시작(크기), 회복 구간, 종료. 플레이어와 적 그래프 모두 |
 | TK Dodge | `TKDR_DodgeStart`, `TKDR_IframeEnd`, `TKDR_DodgeEnd`, `TkDodgeStop`, `TKDodgeRotation` | 회피 시작, 무적 끝, 종료. 플레이어와 적 모두 |
 | 막기 계열(바닐라 그래프와 막기 모드) | `blockStartOut`, `blockStop`, `SBF_BlockStart/Stop`, `blockHitStop`, `Maxsu_BlockHitWinOpen`, `SoundPlay.NPCHumanCombatShieldBlock` | 방어 자세 구간. `Maxsu_GuardBreakStart/Stop`은 관측되지 않았다. |
@@ -297,7 +297,7 @@
 | hideQuestItems | 보관함 메뉴를 열 때마다 이름 없는 물건이 들어왔다 나감 | 무시한다. |
 | buy and sell torches | 거래 메뉴를 열고 닫을 때 횃불 1개가 들어왔다 나감 | 무시한다. |
 | 바닐라 상인(Regional Merchants도 같음) | 거래 상대가 상인 대신 상인 보관함(일반 플레이 기록 0.0.2의 `Skyrim.esm:9CAFE`도 그랬다) | 대화 상대로 상인을 이어 붙인다. |
-| Archon | 신전 제단 활성화 직후 효과 7개 | 축복 후보. 축복인지 확인하지 못했다. |
+| Archon | 신전 제단 활성화 직후 효과 7개("키나레스의 추종자", "키나레스의 길", "바람의 노래", "지구력 증가" 등) | 축복이다(레코드 이름으로 확인). 신마다 효과 이름이 다르므로 어댑터에 신별 목록을 둔다. |
 | 저장 관련 모드(Regional Save Names 등) | F5 저장도 일반 저장 이름으로 남음 | 저장 종류를 이름으로 판별하지 않는다. |
 | PickpocketCriminals | 소매치기를 바꾸는 DLL | 소매치기 성공 신호는 정상으로 왔다. 한 실행에서 사용자가 훔쳤다고 기억한 두 번이 기록에 없었는데, 관련은 확인하지 못했다. |
 
