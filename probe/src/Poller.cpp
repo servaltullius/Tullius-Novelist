@@ -3,6 +3,7 @@
 #include "Events.h"
 #include "Forms.h"
 #include "Out.h"
+#include "World.h"
 
 namespace probe::poller
 {
@@ -85,6 +86,7 @@ namespace probe::poller
 			Changed("console", last.console, now.console, last.valid);
 			Changed("hpBand", last.hpBand, now.hpBand, last.valid);
 
+			world::Sample(player);
 			forms::PublishTeammatePointers();
 			events::EnsurePlayerGraph();
 			events::EnsureEnemyGraphs();
@@ -104,6 +106,9 @@ namespace probe::poller
 					auto it = g_teamLast.find(id);
 					changed = (it == g_teamLast.end() || it->second != teammate);
 					g_teamLast[id] = teammate;
+				}
+				if (teammate && loaded) {
+					world::EnsureBaseline(id);
 				}
 				if (changed) {
 					Line("poll.teammate").raw("actor", forms::Json(actor)).flag("teammate", teammate).flag("loaded", loaded).emit();

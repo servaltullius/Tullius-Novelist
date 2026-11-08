@@ -9,6 +9,7 @@
 #include "Forms.h"
 #include "Out.h"
 #include "Poller.h"
+#include "World.h"
 
 namespace
 {
@@ -47,6 +48,7 @@ namespace
 		probe::damage::ResetDotSources();
 		probe::poller::ResetBaseline();
 		probe::forms::ResetTeammates();
+		probe::world::Reset();
 	}
 
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)

@@ -1,6 +1,7 @@
 #include "Events.h"
 #include "Forms.h"
 #include "Out.h"
+#include "World.h"
 
 namespace probe::events
 {
@@ -379,6 +380,7 @@ namespace probe::events
 			if (!forms::IsPlayerSide(e.actor.get())) {
 				return;
 			}
+			world::NoteEquipChange(e.actor ? e.actor->GetFormID() : 0);
 			const auto* form = RE::TESForm::LookupByID(e.baseObject);
 			Line("equip").raw("actor", forms::Json(e.actor.get())).raw("item", forms::Json(form))
 				.num("type", static_cast<std::uint64_t>(form ? form->GetFormType() : RE::FormType::None))
