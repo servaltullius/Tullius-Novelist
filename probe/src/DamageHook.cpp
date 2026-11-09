@@ -41,38 +41,11 @@ namespace probe::damage
 			return ref;
 		}
 
-		bool IsReadable(const void* a_ptr, std::size_t a_size)
-		{
-			if (!a_ptr) {
-				return false;
-			}
-			MEMORY_BASIC_INFORMATION mbi{};
-			if (::VirtualQuery(a_ptr, &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
-				return false;
-			}
-			if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-				return false;
-			}
-			const auto start = reinterpret_cast<std::uintptr_t>(a_ptr);
-			const auto regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-			return start + a_size <= regionEnd;
-		}
-
 		// Some callers pass stale or garbage actor pointers (CalamityAffixes logs and drops them).
 		// An actor is accepted only if it is readable and its vtable lies inside the game executable.
 		RE::Actor* Sanitize(RE::Actor* a_actor)
 		{
-			if (!a_actor || !IsReadable(a_actor, sizeof(void*))) {
-				return nullptr;
-			}
-			const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(a_actor);
-			const auto rdata = REL::Module::get().segment(REL::Segment::rdata);
-			const auto begin = rdata.address();
-			const auto end = begin + rdata.size();
-			if (vtbl < begin || vtbl >= end) {
-				return nullptr;
-			}
-			return a_actor;
+			return forms::IsGameObject(a_actor) ? a_actor : nullptr;
 		}
 
 		// Attacker-less damage below this size arrives every frame (B run: 6,677 of 7,545 calls).

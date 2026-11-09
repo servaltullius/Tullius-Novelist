@@ -11,6 +11,15 @@ namespace probe::forms
 	// JSON object for a reference: {"key":ref key,"base":base key,"name":..}, or null.
 	std::string Json(const RE::TESObjectREFR* a_ref);
 
+	// True if the address is readable and starts with a vtable inside the game executable.
+	// Never throws or faults, so it is safe for stale or garbage pointers.
+	bool IsGameObject(const void* a_ptr);
+	// The form at this address, or nullptr unless it is a live form: a game object that the game
+	// returns for its own form ID. For pointers taken from event structs whose layout has not been
+	// seen working on this runtime (a SpellsLearned event carried 0x46 where CommonLib declares a
+	// SpellItem*, and reading it as one crashed the game).
+	const RE::TESForm* VerifiedForm(const void* a_ptr);
+
 	bool IsPlayer(const RE::TESObjectREFR* a_ref);
 	// Player or a current player teammate.
 	bool IsPlayerSide(const RE::TESObjectREFR* a_ref);

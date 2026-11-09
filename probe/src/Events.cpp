@@ -220,6 +220,26 @@ namespace probe::events
 
 		// --- handlers -------------------------------------------------------------------------
 
+		// For pointers taken from event structs whose layout has not been seen working on this runtime.
+		// CommonLib's definition is not proof: a SpellsLearned event carried 0x46 where it declares a
+		// SpellItem*, and reading that as a form crashed the game (0.0.6, 2026-11-10). The object is
+		// written only if it verifies as a live form; the raw value is always written under
+		// "<key>Raw", so a wrong definition shows up in the record instead.
+		const RE::TESForm* PutChecked(Line& a_line, std::string_view a_key, const void* a_ptr)
+		{
+			const auto* form = forms::VerifiedForm(a_ptr);
+			const auto* ref = form ? form->AsReference() : nullptr;
+			a_line.raw(a_key, ref ? forms::Json(ref) : forms::Json(form));
+			a_line.hex(std::string(a_key) + "Raw", reinterpret_cast<std::uintptr_t>(a_ptr));
+			return form;
+		}
+
+		bool IsCheckedPlayerSide(const void* a_ptr)
+		{
+			const auto* form = forms::VerifiedForm(a_ptr);
+			return form && forms::IsPlayerSide(form->AsReference());
+		}
+
 		void OnQuestStartStop(const RE::TESQuestStartStopEvent& e)
 		{
 			Line("quest.startstop").str("quest", forms::Key(e.formID)).str("name", QuestName(e.formID))
@@ -477,7 +497,14 @@ namespace probe::events
 		}
 
 		void OnSouls(const RE::DragonSoulsGained::Event& e) { Line("dragon.souls").num("souls", static_cast<double>(e.souls)).emit(); }
-		void OnSpellLearned(const RE::SpellsLearned::Event& e) { Line("spell.learned").raw("spell", forms::Json(e.spell)).emit(); }
+
+		void OnSpellLearned(const RE::SpellsLearned::Event& e)
+		{
+			// What the first field really holds on this runtime is not known yet (see PutChecked).
+			Line line("spell.learned");
+			PutChecked(line, "spell", e.spell);
+			line.emit();
+		}
 
 		void OnCrafted(const RE::ItemCrafted::Event& e)
 		{
@@ -498,23 +525,38 @@ namespace probe::events
 
 		void OnSoulTrap(const RE::SoulsTrapped::Event& e)
 		{
-			Line("soul.trapped").raw("trapper", forms::Json(e.trapper)).raw("target", forms::Json(e.target)).emit();
+			// Never seen in the stage 0 records, so the pointers are checked before use.
+			Line line("soul.trapped");
+			PutChecked(line, "trapper", e.trapper);
+			PutChecked(line, "target", e.target);
+			line.emit();
 		}
 
 		void OnCritical(const RE::CriticalHit::Event& e)
 		{
-			if (!forms::IsPlayerSide(e.aggressor)) {
+			// Never seen in the stage 0 records, so the pointers are checked before use. An aggressor
+			// that does not verify is written too: that is exactly the case worth knowing about.
+			const bool aggressorOk = forms::VerifiedForm(e.aggressor) != nullptr;
+			if (aggressorOk && !IsCheckedPlayerSide(e.aggressor)) {
 				return;
 			}
-			Line("crit").raw("aggressor", forms::Json(e.aggressor)).raw("weapon", forms::Json(e.weapon)).flag("sneak", e.sneakHit).emit();
+			Line line("crit");
+			PutChecked(line, "aggressor", e.aggressor);
+			PutChecked(line, "weapon", e.weapon);
+			line.flag("sneak", e.sneakHit).emit();
 		}
 
 		void OnDisarm(const RE::DisarmedEvent::Event& e)
 		{
-			if (!forms::IsPlayerSide(e.source) && !forms::IsPlayerSide(e.target)) {
+			// Never seen in the stage 0 records, so the pointers are checked before use.
+			const bool bothOk = forms::VerifiedForm(e.source) && forms::VerifiedForm(e.target);
+			if (bothOk && !IsCheckedPlayerSide(e.source) && !IsCheckedPlayerSide(e.target)) {
 				return;
 			}
-			Line("disarm").raw("source", forms::Json(e.source)).raw("target", forms::Json(e.target)).emit();
+			Line line("disarm");
+			PutChecked(line, "source", e.source);
+			PutChecked(line, "target", e.target);
+			line.emit();
 		}
 
 		void OnShout(const RE::ShoutAttack::Event& e) { Line("shout").raw("shout", forms::Json(e.shout)).emit(); }

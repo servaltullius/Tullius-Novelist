@@ -12,6 +12,52 @@ namespace probe::forms
 		std::atomic<std::shared_ptr<const PtrList>> g_teamPtrs{ std::make_shared<const PtrList>() };
 	}
 
+	namespace
+	{
+		bool IsReadable(const void* a_ptr, std::size_t a_size)
+		{
+			if (!a_ptr) {
+				return false;
+			}
+			MEMORY_BASIC_INFORMATION mbi{};
+			if (::VirtualQuery(a_ptr, &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
+				return false;
+			}
+			if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+				return false;
+			}
+			const auto start = reinterpret_cast<std::uintptr_t>(a_ptr);
+			const auto regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+			return start + a_size <= regionEnd;
+		}
+
+		bool HasGameVtable(const void* a_ptr)
+		{
+			const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(a_ptr);
+			const auto rdata = REL::Module::get().segment(REL::Segment::rdata);
+			const auto begin = rdata.address();
+			return vtbl >= begin && vtbl < begin + rdata.size();
+		}
+	}
+
+	bool IsGameObject(const void* a_ptr)
+	{
+		return IsReadable(a_ptr, sizeof(void*)) && HasGameVtable(a_ptr);
+	}
+
+	const RE::TESForm* VerifiedForm(const void* a_ptr)
+	{
+		// The whole TESForm header has to be readable before the form ID is taken from it.
+		if (!IsReadable(a_ptr, sizeof(RE::TESForm)) || !HasGameVtable(a_ptr)) {
+			return nullptr;
+		}
+		const auto* form = static_cast<const RE::TESForm*>(a_ptr);
+		const auto  id = form->GetFormID();
+		// A real form is the one the game returns for its own ID. Anything else that merely looks
+		// like an object (a stale pointer, a field that is not a form at all) fails here.
+		return id != 0 && RE::TESForm::LookupByID(id) == form ? form : nullptr;
+	}
+
 	void PublishTeammatePointers()
 	{
 		auto list = std::make_shared<PtrList>();
