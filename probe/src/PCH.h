@@ -9,6 +9,7 @@
 #include <memory>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <format>
 #include <intrin.h>

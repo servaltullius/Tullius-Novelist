@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(TulliusNovelist VERSION 0.0.5 LANGUAGES CXX)
+project(TulliusNovelist VERSION 0.0.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +40,7 @@ target_sources(TulliusNovelistProbe PRIVATE
     probe/src/Poller.cpp
     probe/src/World.cpp
     probe/src/CoSave.cpp
+    probe/src/Session.cpp
 )
 target_precompile_headers(TulliusNovelistProbe PRIVATE probe/src/PCH.h)
 # CommonLib v9 pulls in <Windows.h>; keep its min/max macros away from std::min/std::max.

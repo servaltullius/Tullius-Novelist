@@ -4,8 +4,8 @@
 // side wears. Written only when something changes, so a chapter can be placed in time and space.
 namespace probe::world
 {
-	// Main thread (poll task, every 500 ms, player 3D loaded): game time, weather, cell, and
-	// equipment snapshots that are due.
+	// Poll task (SKSE task, every 500 ms, player 3D loaded; the OS thread varies): game time,
+	// weather, cell, and equipment snapshots that are due.
 	void Sample(RE::PlayerCharacter* a_player);
 
 	// Any thread: this actor equipped or unequipped something. A snapshot follows once no change
@@ -17,6 +17,6 @@ namespace probe::world
 	// none is pending, take one after the settle time (player after load, teammate in the scene).
 	void EnsureBaseline(RE::FormID a_actor);
 
-	// After a load or new game: forget remembered state so the next sample writes a baseline.
+	// At each game start, from any thread: forget remembered state so the next sample writes a baseline.
 	void Reset();
 }

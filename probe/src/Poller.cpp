@@ -3,6 +3,7 @@
 #include "Events.h"
 #include "Forms.h"
 #include "Out.h"
+#include "Session.h"
 #include "World.h"
 
 namespace probe::poller
@@ -48,7 +49,9 @@ namespace probe::poller
 			}
 		}
 
-		void SampleOnMainThread()
+		// Runs as an SKSE task. One sample at a time, but not on one fixed thread: in the stage 0
+		// records the task ran on other threads than the one that delivers SKSE messages.
+		void SampleTask()
 		{
 			g_samplePending.store(false);
 			perf::Scope scope("poll.sample");
@@ -58,6 +61,7 @@ namespace probe::poller
 			}
 			// A game started from the main menu with coc sends no SKSE message; the player in the world is the signal.
 			out::Arm();
+			session::EnsureStarted();
 			auto* av = player->AsActorValueOwner();
 			const float hp = av->GetActorValue(RE::ActorValue::kHealth);
 			const float hpMax = av->GetPermanentActorValue(RE::ActorValue::kHealth);
@@ -125,7 +129,7 @@ namespace probe::poller
 				std::this_thread::sleep_for(500ms);
 				if (!g_samplePending.exchange(true)) {
 					if (auto* task = SKSE::GetTaskInterface()) {
-						task->AddTask([] { SampleOnMainThread(); });
+						task->AddTask([] { SampleTask(); });
 					} else {
 						g_samplePending.store(false);
 					}

@@ -1,5 +1,6 @@
 #include "CoSave.h"
 #include "Out.h"
+#include "Session.h"
 
 namespace probe::cosave
 {
@@ -64,7 +65,11 @@ namespace probe::cosave
 
 		void OnRevert(SKSE::SerializationInterface*)
 		{
+			// The game being torn down is no longer what the next save continues from. A load sets the
+			// head again in OnLoad; a new game gets no load callback and must start without a parent.
+			g_headId.store(0);
 			Line("cosave.revert").emit();
+			session::OnRevert();
 		}
 	}
 

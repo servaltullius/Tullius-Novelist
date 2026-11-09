@@ -1,16 +1,15 @@
 // Tullius Novelist stage 0 probe.
 // Logs the order and thread of SKSE signals, gameplay events, HandleHealthDamage calls and
 // polled player state into Documents/My Games/<game>/SKSE/TulliusNovelist/TulliusNovelistProbe-<time>.jsonl.
-// The file appears only once a game is loaded or started, so launches that end at the main menu leave none.
+// The file appears only once a game is loaded or started, so launches that end at the main menu leave none;
+// until then the lines so far are kept in startup-last.jsonl in the same folder, overwritten by each launch.
 // It changes nothing in the game. See docs/design-draft.md, chapter 12 (stage 0).
 
 #include "CoSave.h"
-#include "DamageHook.h"
 #include "Events.h"
-#include "Forms.h"
 #include "Out.h"
 #include "Poller.h"
-#include "World.h"
+#include "Session.h"
 
 namespace
 {
@@ -41,17 +40,6 @@ namespace
 		}
 	}
 
-	void AfterGameStart()
-	{
-		probe::damage::InstallOnce();
-		probe::events::AttachPlayerGraph();
-		probe::events::ResetEnemyGraphs();
-		probe::damage::ResetDotSources();
-		probe::poller::ResetBaseline();
-		probe::forms::ResetTeammates();
-		probe::world::Reset();
-	}
-
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
 		if (!a_msg) {
@@ -76,7 +64,9 @@ namespace
 		default:
 			break;
 		}
-		if (a_msg->type == M::kPreLoadGame) {
+		// A new generation starts with each game: a load or a new game. This message's own line was
+		// begun before the bump and still carries the old number; everything after it carries the new one.
+		if (a_msg->type == M::kPreLoadGame || a_msg->type == M::kNewGame) {
 			probe::out::BumpGeneration();
 		}
 		line.emit();
@@ -89,12 +79,17 @@ namespace
 			probe::events::RegisterGlobal();
 			probe::poller::Start();
 			break;
+		case M::kPreLoadGame:
+			probe::session::OnPreLoad();
+			break;
 		case M::kNewGame:
-			AfterGameStart();
+			probe::session::OnGameStart("newGame");
 			break;
 		case M::kPostLoadGame:
 			if (a_msg->data != nullptr) {
-				AfterGameStart();
+				probe::session::OnGameStart("load");
+			} else {
+				probe::session::OnLoadFailed();
 			}
 			break;
 		case M::kSaveGame:

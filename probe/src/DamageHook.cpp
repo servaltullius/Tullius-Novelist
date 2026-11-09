@@ -12,9 +12,10 @@ namespace probe::damage
 		constexpr std::size_t kSlot = 0x104;
 
 		std::atomic_bool g_installed{ false };
-		Fn*              g_origActor = nullptr;
-		Fn*              g_origCharacter = nullptr;
-		Fn*              g_origPlayer = nullptr;
+		// Written once at install, read by the thunks on whatever thread the game calls them from.
+		std::atomic<Fn*> g_origActor{ nullptr };
+		std::atomic<Fn*> g_origCharacter{ nullptr };
+		std::atomic<Fn*> g_origPlayer{ nullptr };
 
 		struct ModuleRef
 		{
@@ -74,8 +75,9 @@ namespace probe::damage
 			return a_actor;
 		}
 
-		// Attacker-less damage below this size arrives every frame (B run: 7,298 of 7,545 calls).
-		// The hook only counts it; the poll task lists the target's health effects once per window.
+		// Attacker-less damage below this size arrives every frame (B run: 6,677 of 7,545 calls).
+		// Each call is still written as a damage line. On top of that the hook counts them per target,
+		// and the poll task lists the target's health effects once per window.
 		constexpr float  kDotThreshold = 0.5f;
 		constexpr double kDotWindowMs = 5000.0;
 
@@ -225,30 +227,38 @@ namespace probe::damage
 		// noinline keeps _ReturnAddress() pointing at the caller of the vtable slot.
 		__declspec(noinline) void ThunkActor(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
 		{
-			Observe("Actor", g_origActor, reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
+			Observe("Actor", g_origActor.load(), reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
 		}
 		__declspec(noinline) void ThunkCharacter(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
 		{
-			Observe("Character", g_origCharacter, reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
+			Observe("Character", g_origCharacter.load(), reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
 		}
 		__declspec(noinline) void ThunkPlayer(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
 		{
-			Observe("PlayerCharacter", g_origPlayer, reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
+			Observe("PlayerCharacter", g_origPlayer.load(), reinterpret_cast<std::uintptr_t>(_ReturnAddress()), a_this, a_attacker, a_damage);
 		}
 
-		void Install(const char* a_label, REL::Relocation<std::uintptr_t> a_vtbl, Fn* a_thunk, Fn*& a_original)
+		void Install(const char* a_label, REL::Relocation<std::uintptr_t> a_vtbl, Fn* a_thunk, std::atomic<Fn*>& a_original)
 		{
-			auto* entries = reinterpret_cast<std::uintptr_t*>(a_vtbl.address());
-			const std::uintptr_t previous = entries ? entries[kSlot] : 0;
 			// Chain to whatever is in the slot now, vanilla or another plugin's hook. Never skip.
-			a_original = reinterpret_cast<Fn*>(a_vtbl.write_vfunc(kSlot, a_thunk));
+			// The chain target is stored before the slot points at our thunk: actor updates run on job
+			// threads, and a call arriving in between would find nothing to pass the damage on to.
+			const auto* entries = reinterpret_cast<const std::uintptr_t*>(a_vtbl.address());
+			const std::uintptr_t seen = entries[kSlot];
+			a_original.store(reinterpret_cast<Fn*>(seen));
+			const std::uintptr_t previous = a_vtbl.write_vfunc(kSlot, a_thunk);
+			if (previous != seen) {
+				// Another plugin replaced the slot between the read and the write; chain to what was really there.
+				a_original.store(reinterpret_cast<Fn*>(previous));
+			}
 			const auto prev = ModuleOf(previous);
 			Line("probe.damageHook")
 				.str("vtbl", a_label)
 				.hex("previous", previous)
 				.str("previousModule", prev.name)
 				.hex("previousOffset", prev.offset)
-				.flag("chained", a_original != nullptr)
+				.flag("chained", previous != 0)
+				.flag("slotChangedDuringInstall", previous != seen)
 				.emit();
 		}
 	}

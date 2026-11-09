@@ -1,7 +1,8 @@
 #pragma once
 
 // JSONL output for the probe. One line per observation, written by a background thread.
-// Every line carries: ev (kind), ms (steady clock since plugin load), tid (OS thread id), gen (load generation).
+// Every line carries: ev (kind), ms (steady clock since plugin load), tid (OS thread id),
+// gen (game generation: goes up at each load, new game, or game started without a message).
 namespace probe
 {
 	class Line
@@ -33,7 +34,8 @@ namespace probe
 
 	namespace out
 	{
-		// Picks this run's file name. Nothing is written until Arm().
+		// Picks this run's file name. Until Arm() the lines are held in memory and mirrored to
+		// startup-last.jsonl (one file, overwritten by each launch); no record file is created.
 		void Start();
 		// A game is starting (load or new game): create the file, write everything held so far, and keep writing.
 		void Arm();

@@ -11,8 +11,11 @@ namespace probe
 		std::int64_t             g_qpcFreq = 1;
 		std::int64_t             g_qpcStart = 0;
 		std::filesystem::path    g_path;
+		std::filesystem::path    g_startupPath;
 		std::atomic_bool         g_armed{ false };
 		bool                     g_prepared = false;  // writer thread only
+		std::size_t              g_mirrored = 0;      // writer thread only: queued lines already in the startup file
+		bool                     g_startupOpened = false;  // writer thread only
 		constexpr std::size_t    kMaxBacklog = 200'000;
 		// Lines held in memory while no game has started (main menu). Past this the file is opened anyway.
 		constexpr std::size_t    kMaxPending = 20'000;
@@ -79,6 +82,36 @@ namespace probe
 				.emit();
 		}
 
+		// Runs on the writer thread while no game has started. The lines held in memory are also kept
+		// in one fixed file that each launch overwrites, so a launch that dies before reaching a game
+		// (a crash while loading plugins or at the main menu) still shows how far it got. The file does
+		// not carry the record prefix, so the clean-up above never counts or removes it.
+		void MirrorPending()
+		{
+			std::vector<std::string> fresh;
+			{
+				std::scoped_lock lock(g_queueLock);
+				if (g_queue.size() <= g_mirrored) {
+					return;
+				}
+				fresh.assign(g_queue.begin() + static_cast<std::ptrdiff_t>(g_mirrored), g_queue.end());
+			}
+			if (!g_startupOpened) {
+				std::error_code ec;
+				std::filesystem::create_directories(g_startupPath.parent_path(), ec);
+			}
+			std::ofstream file(g_startupPath, std::ios::binary | (g_startupOpened ? std::ios::app : std::ios::trunc));
+			if (!file) {
+				return;  // the same lines are tried again on the next pass
+			}
+			g_startupOpened = true;
+			for (const auto& line : fresh) {
+				file.write(line.data(), static_cast<std::streamsize>(line.size()));
+				file.put('\n');
+			}
+			g_mirrored += fresh.size();
+		}
+
 		void WriterLoop()
 		{
 			std::vector<std::string> batch;
@@ -88,7 +121,9 @@ namespace probe
 				}
 				g_flushSoon.store(false);
 				if (!g_armed.load()) {
-					// No game started yet: keep lines in memory so a launch that ends at the main menu leaves no file.
+					// No game started yet: keep lines in memory so a launch that ends at the main menu
+					// leaves no record file of its own.
+					MirrorPending();
 					std::scoped_lock lock(g_queueLock);
 					if (g_queue.size() < kMaxPending) {
 						continue;
@@ -102,6 +137,7 @@ namespace probe
 					std::scoped_lock lock(g_queueLock);
 					batch.swap(g_queue);
 				}
+				g_mirrored = 0;  // the queue starts over; only matters if it fills up again before a game starts
 				if (batch.empty()) {
 					continue;
 				}
@@ -121,19 +157,18 @@ namespace probe
 					batch.clear();
 					continue;
 				}
-				if (g_openFailures > 0 || g_droppedLines > 0) {
-					const auto note = std::format(R"({{"ev":"writer.recovered","ms":{:.3f},"openFailures":{},"droppedLines":{}}})",
-						out::ElapsedMs(), g_openFailures, g_droppedLines);
-					file.write(note.data(), static_cast<std::streamsize>(note.size()));
-					file.put('\n');
-					g_openFailures = 0;
-					g_droppedLines = 0;
-				}
 				for (const auto& line : batch) {
 					file.write(line.data(), static_cast<std::streamsize>(line.size()));
 					file.put('\n');
 				}
 				batch.clear();
+				if (g_openFailures > 0 || g_droppedLines > 0) {
+					// Queued like any other line, so it lands after the held-back lines it reports on
+					// and the file stays in time order.
+					Line("writer.recovered").num("openFailures", g_openFailures).num("droppedLines", g_droppedLines).emit();
+					g_openFailures = 0;
+					g_droppedLines = 0;
+				}
 			}
 		}
 	}
@@ -261,12 +296,19 @@ namespace probe
 			g_qpcFreq = f.QuadPart > 0 ? f.QuadPart : 1;
 			g_qpcStart = Qpc();
 
-			// Own folder under SKSE's log folder, created on the first write (see PrepareFolder).
+			// Own folder under SKSE's log folder, created on the first write.
 			auto       dir = SKSE::log::log_directory();
 			const auto base = (dir ? *dir : std::filesystem::current_path()) / L"TulliusNovelist";
-			const auto now = std::chrono::system_clock::now();
-			const auto local = std::chrono::zoned_time{ std::chrono::current_zone(), now }.get_local_time();
-			g_path = base / std::format("TulliusNovelistProbe-{:%Y%m%d-%H%M%S}.jsonl", std::chrono::floor<std::chrono::seconds>(local));
+			// Local launch time through the C runtime: std::chrono::current_zone() throws where the
+			// system has no time zone database, and this runs while the game loads the plugin.
+			const std::time_t now = std::time(nullptr);
+			std::tm           local{};
+			char              stamp[32] = "00000000-000000";
+			if (::localtime_s(&local, &now) == 0) {
+				std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+			}
+			g_path = base / std::format("TulliusNovelistProbe-{}.jsonl", stamp);
+			g_startupPath = base / L"startup-last.jsonl";
 
 			std::thread(WriterLoop).detach();
 		}

@@ -24,9 +24,9 @@ namespace probe::forms
 	// (different interior cell, interior vs exterior, or another worldspace).
 	float DistanceToPlayer(const RE::TESObjectREFR* a_ref);
 
-	// Main thread: resolves known teammate form IDs to object addresses for the damage hook.
+	// Poll task: resolves known teammate form IDs to object addresses for the damage hook.
 	void PublishTeammatePointers();
-	// Any thread, lock-free: true if the address is a known teammate. Compares addresses only,
-	// never dereferences, so it is safe for unvalidated pointers.
+	// Any thread: true if the address is a known teammate. Compares addresses against the last
+	// published list only and never dereferences, so it is safe for unvalidated pointers.
 	bool IsKnownTeammatePtr(const void* a_ptr);
 }

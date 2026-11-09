@@ -116,7 +116,9 @@ namespace probe::events
 
 		std::atomic_bool g_graphWanted{ false };
 		std::atomic_bool g_graphAttached{ false };
-		int              g_graphRefreshTicks = 0;  // main thread only
+		// EnsurePlayerGraph comes from the poll task and from a game start, on different threads.
+		std::mutex g_graphLock;
+		int        g_graphRefreshTicks = 0;  // guarded by g_graphLock
 
 		// effect.apply de-duplication: same target+effect within 2 s is counted, not logged.
 		std::mutex                                       g_effectLock;
@@ -157,7 +159,7 @@ namespace probe::events
 
 		std::mutex                     g_enemyLock;
 		std::unordered_set<RE::FormID> g_enemyPending;   // queued by combat events (any thread)
-		std::unordered_set<RE::FormID> g_enemyAttached;  // touched only by the poll task
+		std::unordered_set<RE::FormID> g_enemyAttached;  // poll task and game start, under g_enemyLock
 		bool                           g_enemyFullLogged = false;
 
 		class EnemyGraphSink final : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
@@ -617,6 +619,7 @@ namespace probe::events
 
 	void EnsurePlayerGraph()
 	{
+		std::scoped_lock lock(g_graphLock);
 		// Periodic refresh covers graph rebuilds we get no event for (3D reload, some mods).
 		const bool periodic = (++g_graphRefreshTicks % 60) == 0;
 		if (!g_graphWanted.load() && g_graphAttached.load() && !periodic) {

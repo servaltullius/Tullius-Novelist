@@ -31,9 +31,11 @@ namespace probe::world
 			double first{ 0.0 };  // when the actor first became pending; caps the settle delay
 		};
 
-		// Main thread only: Sample runs as an SKSE task and Reset from the load/new-game message,
-		// both on the main thread.
-		State g_state;
+		// Sample runs as an SKSE task and Reset at a game start. The stage 0 records show the task on
+		// other threads than the one that delivers SKSE messages (1,391 of 1,419 poll lines), so the
+		// state is locked rather than assumed to stay on one thread.
+		std::mutex g_stateLock;
+		State      g_state;
 
 		// Equip notes come from event threads, so these are locked.
 		std::mutex                                  g_lock;
@@ -319,9 +321,12 @@ namespace probe::world
 			return;
 		}
 		perf::Scope scope("world.sample");
-		SampleTime(g_state);
-		SampleWeather(g_state);
-		SampleSpace(g_state, a_player);
+		{
+			std::scoped_lock lock(g_stateLock);
+			SampleTime(g_state);
+			SampleWeather(g_state);
+			SampleSpace(g_state, a_player);
+		}
 		// The player's outfit is the chapter's starting point. Counting the settle time from the
 		// first loaded sample (not from the load message) skips the re-equip burst that follows
 		// the loading screen.
@@ -356,7 +361,10 @@ namespace probe::world
 
 	void Reset()
 	{
-		g_state = State{};
+		{
+			std::scoped_lock lock(g_stateLock);
+			g_state = State{};
+		}
 		std::scoped_lock lock(g_lock);
 		g_snapshotDue.clear();
 		g_lastSnapshot.clear();
