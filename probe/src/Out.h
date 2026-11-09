@@ -33,7 +33,10 @@ namespace probe
 
 	namespace out
 	{
+		// Picks this run's file name. Nothing is written until Arm().
 		void Start();
+		// A game is starting (load or new game): create the file, write everything held so far, and keep writing.
+		void Arm();
 		void FlushSoon();
 		double ElapsedMs();
 		std::uint32_t Generation();

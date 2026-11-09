@@ -1,6 +1,7 @@
 // Tullius Novelist stage 0 probe.
 // Logs the order and thread of SKSE signals, gameplay events, HandleHealthDamage calls and
-// polled player state into Documents/My Games/<game>/SKSE/TulliusNovelistProbe-<time>.jsonl.
+// polled player state into Documents/My Games/<game>/SKSE/TulliusNovelist/TulliusNovelistProbe-<time>.jsonl.
+// The file appears only once a game is loaded or started, so launches that end at the main menu leave none.
 // It changes nothing in the game. See docs/design-draft.md, chapter 12 (stage 0).
 
 #include "CoSave.h"
@@ -79,6 +80,9 @@ namespace
 			probe::out::BumpGeneration();
 		}
 		line.emit();
+		if (a_msg->type == M::kPreLoadGame || a_msg->type == M::kNewGame) {
+			probe::out::Arm();
+		}
 
 		switch (a_msg->type) {
 		case M::kDataLoaded:

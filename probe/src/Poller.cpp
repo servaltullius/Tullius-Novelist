@@ -56,6 +56,8 @@ namespace probe::poller
 			if (!player || !player->Is3DLoaded()) {
 				return;
 			}
+			// A game started from the main menu with coc sends no SKSE message; the player in the world is the signal.
+			out::Arm();
 			auto* av = player->AsActorValueOwner();
 			const float hp = av->GetActorValue(RE::ActorValue::kHealth);
 			const float hpMax = av->GetPermanentActorValue(RE::ActorValue::kHealth);

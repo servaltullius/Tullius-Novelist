@@ -11,7 +11,16 @@ namespace probe
 		std::int64_t             g_qpcFreq = 1;
 		std::int64_t             g_qpcStart = 0;
 		std::filesystem::path    g_path;
+		std::atomic_bool         g_armed{ false };
+		bool                     g_prepared = false;  // writer thread only
 		constexpr std::size_t    kMaxBacklog = 200'000;
+		// Lines held in memory while no game has started (main menu). Past this the file is opened anyway.
+		constexpr std::size_t    kMaxPending = 20'000;
+		// Old record files: keep the newest kKeepFiles (including this run's), but never delete one written
+		// within kKeepRecent, so a burst of short launches cannot push out a play session not yet handed over.
+		constexpr std::size_t    kKeepFiles = 50;
+		constexpr auto           kKeepRecent = std::chrono::hours{ 72 };
+		constexpr std::wstring_view kFilePrefix = L"TulliusNovelistProbe-";
 		std::uint64_t            g_openFailures = 0;  // writer thread only
 		std::uint64_t            g_droppedLines = 0;  // writer thread only
 
@@ -22,6 +31,54 @@ namespace probe
 			return v.QuadPart;
 		}
 
+		bool IsRecordFile(const std::filesystem::path& a_path)
+		{
+			return a_path.extension() == L".jsonl" && a_path.filename().wstring().starts_with(kFilePrefix);
+		}
+
+		// Runs once on the writer thread, right before this run's file is first written.
+		// Only touches files of this probe inside its own folder; subfolders are left alone.
+		void PrepareFolder()
+		{
+			const auto dir = g_path.parent_path();
+			std::error_code dirEc;
+			std::filesystem::create_directories(dir, dirEc);
+
+			std::vector<std::filesystem::path> old;
+			std::error_code                    listEc;
+			for (std::filesystem::directory_iterator it(dir, listEc), end; !listEc && it != end; it.increment(listEc)) {
+				std::error_code fe;
+				if (it->is_regular_file(fe) && IsRecordFile(it->path()) && it->path() != g_path) {
+					old.push_back(it->path());
+				}
+			}
+			// File names carry the launch time, so name order is age order.
+			std::sort(old.begin(), old.end(), [](const auto& a, const auto& b) { return a.filename() > b.filename(); });
+
+			const auto    now = std::filesystem::file_time_type::clock::now();
+			std::uint64_t removed = 0;
+			std::uint64_t failed = 0;
+			for (std::size_t i = kKeepFiles - 1; i < old.size(); ++i) {
+				std::error_code fe;
+				const auto      written = std::filesystem::last_write_time(old[i], fe);
+				if (fe || now - written < kKeepRecent) {
+					continue;
+				}
+				if (std::filesystem::remove(old[i], fe) && !fe) {
+					++removed;
+				} else {
+					++failed;
+				}
+			}
+			Line("probe.files")
+				.flag("folderOk", !dirEc)
+				.flag("listOk", !listEc)
+				.num("previousFiles", static_cast<std::uint64_t>(old.size()))
+				.num("removed", removed)
+				.num("removeFailed", failed)
+				.emit();
+		}
+
 		void WriterLoop()
 		{
 			std::vector<std::string> batch;
@@ -30,6 +87,17 @@ namespace probe
 					std::this_thread::sleep_for(50ms);
 				}
 				g_flushSoon.store(false);
+				if (!g_armed.load()) {
+					// No game started yet: keep lines in memory so a launch that ends at the main menu leaves no file.
+					std::scoped_lock lock(g_queueLock);
+					if (g_queue.size() < kMaxPending) {
+						continue;
+					}
+				}
+				if (!g_prepared) {
+					g_prepared = true;
+					PrepareFolder();
+				}
 				{
 					std::scoped_lock lock(g_queueLock);
 					batch.swap(g_queue);
@@ -193,15 +261,21 @@ namespace probe
 			g_qpcFreq = f.QuadPart > 0 ? f.QuadPart : 1;
 			g_qpcStart = Qpc();
 
-			auto dir = SKSE::log::log_directory();
-			const auto base = dir ? *dir : std::filesystem::current_path();
-			std::error_code ec;
-			std::filesystem::create_directories(base, ec);
+			// Own folder under SKSE's log folder, created on the first write (see PrepareFolder).
+			auto       dir = SKSE::log::log_directory();
+			const auto base = (dir ? *dir : std::filesystem::current_path()) / L"TulliusNovelist";
 			const auto now = std::chrono::system_clock::now();
 			const auto local = std::chrono::zoned_time{ std::chrono::current_zone(), now }.get_local_time();
 			g_path = base / std::format("TulliusNovelistProbe-{:%Y%m%d-%H%M%S}.jsonl", std::chrono::floor<std::chrono::seconds>(local));
 
 			std::thread(WriterLoop).detach();
+		}
+
+		void Arm()
+		{
+			if (!g_armed.exchange(true)) {
+				g_flushSoon.store(true);
+			}
 		}
 
 		void FlushSoon() { g_flushSoon.store(true); }
