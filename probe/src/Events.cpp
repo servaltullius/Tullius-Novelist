@@ -222,21 +222,36 @@ namespace probe::events
 
 		// For pointers taken from event structs whose layout has not been seen working on this runtime.
 		// CommonLib's definition is not proof: a SpellsLearned event carried 0x46 where it declares a
-		// SpellItem*, and reading that as a form crashed the game (0.0.6, 2026-11-10). The object is
-		// written only if it verifies as a live form; the raw value is always written under
-		// "<key>Raw", so a wrong definition shows up in the record instead.
-		const RE::TESForm* PutChecked(Line& a_line, std::string_view a_key, const void* a_ptr)
+		// SpellItem*, and reading that as a form crashed the game (0.0.6, 2026-11-10). Later the same
+		// field held the player right after a load (0.0.7, 2026-11-18), a live form of the wrong kind.
+		// So the value must be a live form of the expected type before it is used.
+		const RE::TESForm* CheckedForm(const void* a_ptr, RE::FormType a_type)
 		{
 			const auto* form = forms::VerifiedForm(a_ptr);
+			return form && form->Is(a_type) ? form : nullptr;
+		}
+
+		// Writes the object only if it is a live form of the expected type. The raw value is always
+		// written under "<key>Raw", so a wrong definition shows up in the record. A live form of
+		// another type is written as "<key>WrongType" and "<key>WrongKey" (never under "<key>", so it
+		// cannot be read as the thing the field names).
+		const RE::TESForm* PutChecked(Line& a_line, std::string_view a_key, const void* a_ptr, RE::FormType a_type)
+		{
+			const auto* live = forms::VerifiedForm(a_ptr);
+			const auto* form = live && live->Is(a_type) ? live : nullptr;
 			const auto* ref = form ? form->AsReference() : nullptr;
 			a_line.raw(a_key, ref ? forms::Json(ref) : forms::Json(form));
 			a_line.hex(std::string(a_key) + "Raw", reinterpret_cast<std::uintptr_t>(a_ptr));
+			if (live && !form) {
+				a_line.str(std::string(a_key) + "WrongType", RE::FormTypeToString(live->GetFormType()));
+				a_line.str(std::string(a_key) + "WrongKey", forms::Key(live));
+			}
 			return form;
 		}
 
 		bool IsCheckedPlayerSide(const void* a_ptr)
 		{
-			const auto* form = forms::VerifiedForm(a_ptr);
+			const auto* form = CheckedForm(a_ptr, RE::FormType::ActorCharacter);
 			return form && forms::IsPlayerSide(form->AsReference());
 		}
 
@@ -500,9 +515,11 @@ namespace probe::events
 
 		void OnSpellLearned(const RE::SpellsLearned::Event& e)
 		{
-			// What the first field really holds on this runtime is not known yet (see PutChecked).
+			// The first field has held 0x46 (spell tome read) and the player (right after a load), never
+			// a spell so far (see PutChecked). The learned spell is taken from the tome read in the
+			// same ms; this line only marks the moment.
 			Line line("spell.learned");
-			PutChecked(line, "spell", e.spell);
+			PutChecked(line, "spell", e.spell, RE::FormType::Spell);
 			line.emit();
 		}
 
@@ -527,35 +544,36 @@ namespace probe::events
 		{
 			// Never seen in the stage 0 records, so the pointers are checked before use.
 			Line line("soul.trapped");
-			PutChecked(line, "trapper", e.trapper);
-			PutChecked(line, "target", e.target);
+			PutChecked(line, "trapper", e.trapper, RE::FormType::ActorCharacter);
+			PutChecked(line, "target", e.target, RE::FormType::ActorCharacter);
 			line.emit();
 		}
 
 		void OnCritical(const RE::CriticalHit::Event& e)
 		{
-			// Never seen in the stage 0 records, so the pointers are checked before use. An aggressor
-			// that does not verify is written too: that is exactly the case worth knowing about.
-			const bool aggressorOk = forms::VerifiedForm(e.aggressor) != nullptr;
+			// Seen working on 1.6.1170 (0.0.7, three times), still checked. An aggressor that does not
+			// check out as an actor is written too: that is exactly the case worth knowing about.
+			const bool aggressorOk = CheckedForm(e.aggressor, RE::FormType::ActorCharacter) != nullptr;
 			if (aggressorOk && !IsCheckedPlayerSide(e.aggressor)) {
 				return;
 			}
 			Line line("crit");
-			PutChecked(line, "aggressor", e.aggressor);
-			PutChecked(line, "weapon", e.weapon);
+			PutChecked(line, "aggressor", e.aggressor, RE::FormType::ActorCharacter);
+			PutChecked(line, "weapon", e.weapon, RE::FormType::Weapon);
 			line.flag("sneak", e.sneakHit).emit();
 		}
 
 		void OnDisarm(const RE::DisarmedEvent::Event& e)
 		{
 			// Never seen in the stage 0 records, so the pointers are checked before use.
-			const bool bothOk = forms::VerifiedForm(e.source) && forms::VerifiedForm(e.target);
+			const bool bothOk = CheckedForm(e.source, RE::FormType::ActorCharacter) &&
+			                    CheckedForm(e.target, RE::FormType::ActorCharacter);
 			if (bothOk && !IsCheckedPlayerSide(e.source) && !IsCheckedPlayerSide(e.target)) {
 				return;
 			}
 			Line line("disarm");
-			PutChecked(line, "source", e.source);
-			PutChecked(line, "target", e.target);
+			PutChecked(line, "source", e.source, RE::FormType::ActorCharacter);
+			PutChecked(line, "target", e.target, RE::FormType::ActorCharacter);
 			line.emit();
 		}
 

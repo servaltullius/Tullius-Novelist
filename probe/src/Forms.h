@@ -17,7 +17,8 @@ namespace probe::forms
 	// The form at this address, or nullptr unless it is a live form: a game object that the game
 	// returns for its own form ID. For pointers taken from event structs whose layout has not been
 	// seen working on this runtime (a SpellsLearned event carried 0x46 where CommonLib declares a
-	// SpellItem*, and reading it as one crashed the game).
+	// SpellItem*, and reading it as one crashed the game). Checks that it is a form, not which type:
+	// the caller still has to check the type it expects.
 	const RE::TESForm* VerifiedForm(const void* a_ptr);
 
 	bool IsPlayer(const RE::TESObjectREFR* a_ref);
