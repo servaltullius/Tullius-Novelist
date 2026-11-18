@@ -224,35 +224,40 @@ namespace probe::events
 		// CommonLib's definition is not proof: a SpellsLearned event carried 0x46 where it declares a
 		// SpellItem*, and reading that as a form crashed the game (0.0.6, 2026-11-10). Later the same
 		// field held the player right after a load (0.0.7, 2026-11-18), a live form of the wrong kind.
-		// So the value must be a live form of the expected type before it is used.
-		const RE::TESForm* CheckedForm(const void* a_ptr, RE::FormType a_type)
+		// So the value must be a live form of the expected type before it is used. Each pointer is
+		// checked once per event, and every decision about it (skip, write) uses that one result.
+		struct Checked
 		{
-			const auto* form = forms::VerifiedForm(a_ptr);
-			return form && form->Is(a_type) ? form : nullptr;
+			const void*        raw;   // the value as the event carried it
+			const RE::TESForm* live;  // live form at that address, of any type, or nullptr
+			const RE::TESForm* form;  // `live` if it is of the expected type, else nullptr
+		};
+
+		Checked Check(const void* a_ptr, RE::FormType a_type)
+		{
+			const auto* live = forms::VerifiedForm(a_ptr);
+			return { a_ptr, live, live && live->Is(a_type) ? live : nullptr };
 		}
 
 		// Writes the object only if it is a live form of the expected type. The raw value is always
 		// written under "<key>Raw", so a wrong definition shows up in the record. A live form of
 		// another type is written as "<key>WrongType" and "<key>WrongKey" (never under "<key>", so it
 		// cannot be read as the thing the field names).
-		const RE::TESForm* PutChecked(Line& a_line, std::string_view a_key, const void* a_ptr, RE::FormType a_type)
+		void PutChecked(Line& a_line, std::string_view a_key, const Checked& a_value)
 		{
-			const auto* live = forms::VerifiedForm(a_ptr);
-			const auto* form = live && live->Is(a_type) ? live : nullptr;
-			const auto* ref = form ? form->AsReference() : nullptr;
-			a_line.raw(a_key, ref ? forms::Json(ref) : forms::Json(form));
-			a_line.hex(std::string(a_key) + "Raw", reinterpret_cast<std::uintptr_t>(a_ptr));
-			if (live && !form) {
-				a_line.str(std::string(a_key) + "WrongType", RE::FormTypeToString(live->GetFormType()));
-				a_line.str(std::string(a_key) + "WrongKey", forms::Key(live));
+			const auto* ref = a_value.form ? a_value.form->AsReference() : nullptr;
+			a_line.raw(a_key, ref ? forms::Json(ref) : forms::Json(a_value.form));
+			a_line.hex(std::string(a_key) + "Raw", reinterpret_cast<std::uintptr_t>(a_value.raw));
+			if (a_value.live && !a_value.form) {
+				a_line.str(std::string(a_key) + "WrongType", RE::FormTypeToString(a_value.live->GetFormType()));
+				a_line.str(std::string(a_key) + "WrongKey", forms::Key(a_value.live));
 			}
-			return form;
 		}
 
-		bool IsCheckedPlayerSide(const void* a_ptr)
+		// For a value checked as an actor.
+		bool IsCheckedPlayerSide(const Checked& a_actor)
 		{
-			const auto* form = CheckedForm(a_ptr, RE::FormType::ActorCharacter);
-			return form && forms::IsPlayerSide(form->AsReference());
+			return a_actor.form && forms::IsPlayerSide(a_actor.form->AsReference());
 		}
 
 		void OnQuestStartStop(const RE::TESQuestStartStopEvent& e)
@@ -519,7 +524,7 @@ namespace probe::events
 			// a spell so far (see PutChecked). The learned spell is taken from the tome read in the
 			// same ms; this line only marks the moment.
 			Line line("spell.learned");
-			PutChecked(line, "spell", e.spell, RE::FormType::Spell);
+			PutChecked(line, "spell", Check(e.spell, RE::FormType::Spell));
 			line.emit();
 		}
 
@@ -544,8 +549,8 @@ namespace probe::events
 		{
 			// Never seen in the stage 0 records, so the pointers are checked before use.
 			Line line("soul.trapped");
-			PutChecked(line, "trapper", e.trapper, RE::FormType::ActorCharacter);
-			PutChecked(line, "target", e.target, RE::FormType::ActorCharacter);
+			PutChecked(line, "trapper", Check(e.trapper, RE::FormType::ActorCharacter));
+			PutChecked(line, "target", Check(e.target, RE::FormType::ActorCharacter));
 			line.emit();
 		}
 
@@ -553,27 +558,27 @@ namespace probe::events
 		{
 			// Seen working on 1.6.1170 (0.0.7, three times), still checked. An aggressor that does not
 			// check out as an actor is written too: that is exactly the case worth knowing about.
-			const bool aggressorOk = CheckedForm(e.aggressor, RE::FormType::ActorCharacter) != nullptr;
-			if (aggressorOk && !IsCheckedPlayerSide(e.aggressor)) {
+			const auto aggressor = Check(e.aggressor, RE::FormType::ActorCharacter);
+			if (aggressor.form && !IsCheckedPlayerSide(aggressor)) {
 				return;
 			}
 			Line line("crit");
-			PutChecked(line, "aggressor", e.aggressor, RE::FormType::ActorCharacter);
-			PutChecked(line, "weapon", e.weapon, RE::FormType::Weapon);
+			PutChecked(line, "aggressor", aggressor);
+			PutChecked(line, "weapon", Check(e.weapon, RE::FormType::Weapon));
 			line.flag("sneak", e.sneakHit).emit();
 		}
 
 		void OnDisarm(const RE::DisarmedEvent::Event& e)
 		{
 			// Never seen in the stage 0 records, so the pointers are checked before use.
-			const bool bothOk = CheckedForm(e.source, RE::FormType::ActorCharacter) &&
-			                    CheckedForm(e.target, RE::FormType::ActorCharacter);
-			if (bothOk && !IsCheckedPlayerSide(e.source) && !IsCheckedPlayerSide(e.target)) {
+			const auto source = Check(e.source, RE::FormType::ActorCharacter);
+			const auto target = Check(e.target, RE::FormType::ActorCharacter);
+			if (source.form && target.form && !IsCheckedPlayerSide(source) && !IsCheckedPlayerSide(target)) {
 				return;
 			}
 			Line line("disarm");
-			PutChecked(line, "source", e.source, RE::FormType::ActorCharacter);
-			PutChecked(line, "target", e.target, RE::FormType::ActorCharacter);
+			PutChecked(line, "source", source);
+			PutChecked(line, "target", target);
 			line.emit();
 		}
 
