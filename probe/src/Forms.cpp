@@ -1,5 +1,6 @@
 #include "Forms.h"
 #include "Out.h"
+#include "Text.h"
 
 namespace probe::forms
 {
@@ -23,7 +24,8 @@ namespace probe::forms
 			if (::VirtualQuery(a_ptr, &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
 				return false;
 			}
-			if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+			// Execute-only pages are not readable either.
+			if (!text::IsReadableProtection(mbi.Protect)) {
 				return false;
 			}
 			const auto start = reinterpret_cast<std::uintptr_t>(a_ptr);
@@ -106,7 +108,9 @@ namespace probe::forms
 		if (!file) {
 			return std::format("id:{:08X}", id);
 		}
-		return std::format("{}:{:X}", file->GetFilename(), a_form->GetLocalFormID());
+		// The file name is kept lossless: a name that is not UTF-8 keeps its bytes as %XX
+		// (text::KeyText), so different plugins never share a key.
+		return std::format("{}:{:X}", text::KeyText(file->GetFilename()), a_form->GetLocalFormID());
 	}
 
 	std::string Json(const RE::TESForm* a_form)

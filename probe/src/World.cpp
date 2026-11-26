@@ -225,7 +225,7 @@ namespace probe::world
 					item += std::format(R"(,"shown":"{}")", Escape(shown));
 				}
 				// Temper level as the game stores it (1.0 = none, 1.1 = fine, ...).
-				if (std::fabs(health - 1.0f) >= 0.001f) {
+				if (std::isfinite(health) && std::fabs(health - 1.0f) >= 0.001f) {
 					item += std::format(R"(,"health":{})", std::round(static_cast<double>(health) * 1000.0) / 1000.0);
 				}
 				item += std::format(R"(,"type":{})", static_cast<std::uint32_t>(object->GetFormType()));

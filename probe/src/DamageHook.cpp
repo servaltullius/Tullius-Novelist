@@ -36,7 +36,18 @@ namespace probe::damage
 			wchar_t path[MAX_PATH]{};
 			const auto len = ::GetModuleFileNameW(module, path, MAX_PATH);
 			if (len != 0) {
-				ref.name = std::filesystem::path(std::wstring(path, len)).filename().string();
+				// The file name in UTF-8, not the system code page, so a name outside ASCII stays
+				// readable and distinct in the record. Converted with WideCharToMultiByte, which
+				// never throws (std::filesystem's string conversions can, and this runs inside the
+				// damage hook): an unpaired surrogate becomes U+FFFD.
+				const std::wstring_view full(path, len);
+				const auto              slash = full.find_last_of(L"\\/");
+				const auto              file = slash == std::wstring_view::npos ? full : full.substr(slash + 1);
+				const int               size = ::WideCharToMultiByte(CP_UTF8, 0, file.data(), static_cast<int>(file.size()), nullptr, 0, nullptr, nullptr);
+				if (size > 0) {
+					ref.name.resize(static_cast<std::size_t>(size));
+					::WideCharToMultiByte(CP_UTF8, 0, file.data(), static_cast<int>(file.size()), ref.name.data(), size, nullptr, nullptr);
+				}
 			}
 			return ref;
 		}

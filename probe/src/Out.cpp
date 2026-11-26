@@ -1,4 +1,5 @@
 #include "Out.h"
+#include "Text.h"
 
 namespace probe
 {
@@ -175,34 +176,9 @@ namespace probe
 
 	std::string Escape(std::string_view a_text)
 	{
-		std::string result;
-		result.reserve(a_text.size() + 8);
-		for (const unsigned char c : a_text) {
-			switch (c) {
-			case '"':
-				result += "\\\"";
-				break;
-			case '\\':
-				result += "\\\\";
-				break;
-			case '\n':
-				result += "\\n";
-				break;
-			case '\r':
-				result += "\\r";
-				break;
-			case '\t':
-				result += "\\t";
-				break;
-			default:
-				if (c < 0x20) {
-					result += std::format("\\u{:04x}", static_cast<unsigned>(c));
-				} else {
-					result += static_cast<char>(c);
-				}
-			}
-		}
-		return result;
+		// Bytes that are not UTF-8 become U+FFFD (0.0.8 copied them through, and three lines
+		// with a broken menu name were not valid UTF-8, 2026-11-23).
+		return text::JsonEscape(a_text);
 	}
 
 	Line::Line(std::string_view a_event)

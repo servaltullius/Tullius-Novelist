@@ -2,7 +2,8 @@
 
 namespace probe::forms
 {
-	// "<plugin>:<local id hex>", "dyn:<formid hex>" for runtime forms, "" for null.
+	// "<plugin>:<local id hex>", "dyn:<formid hex>" for runtime forms, "" for null. The plugin file
+	// name goes through text::KeyText: lossless, with %XX for bytes of a name that is not UTF-8.
 	std::string Key(const RE::TESForm* a_form);
 	std::string Key(RE::FormID a_formID);
 

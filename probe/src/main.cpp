@@ -10,6 +10,7 @@
 #include "Out.h"
 #include "Poller.h"
 #include "Session.h"
+#include "Text.h"
 
 namespace
 {
@@ -54,7 +55,9 @@ namespace
 		case M::kSaveGame:
 		case M::kDeleteGame:
 			if (a_msg->data && a_msg->dataLen > 0) {
-				line.str("save", std::string_view(static_cast<const char*>(a_msg->data), ::strnlen(static_cast<const char*>(a_msg->data), a_msg->dataLen)));
+				// Save names are in the system code page; KeyText keeps them lossless (see Text.h).
+				line.str("save", probe::text::KeyText(std::string_view(static_cast<const char*>(a_msg->data),
+					::strnlen(static_cast<const char*>(a_msg->data), a_msg->dataLen))));
 			}
 			break;
 		case M::kPostLoadGame:

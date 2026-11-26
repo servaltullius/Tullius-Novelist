@@ -1,6 +1,7 @@
 #include "Events.h"
 #include "Forms.h"
 #include "Out.h"
+#include "Text.h"
 #include "World.h"
 
 namespace probe::events
@@ -114,6 +115,11 @@ namespace probe::events
 		CountMap   g_animCounts;
 		CountMap   g_modEventCounts;
 
+		// Mod events with a broken name: logged up to this many per run, the rest only counted.
+		constexpr std::uint64_t    kMaxBadModEventLines = 100;
+		std::atomic<std::uint64_t> g_badModEventLines{ 0 };
+		std::atomic<std::uint64_t> g_badModEventsSkipped{ 0 };
+
 		std::atomic_bool g_graphWanted{ false };
 		std::atomic_bool g_graphAttached{ false };
 		// EnsurePlayerGraph comes from the poll task and from a game start, on different threads.
@@ -134,6 +140,10 @@ namespace probe::events
 					return Ctrl::kContinue;
 				}
 				perf::Scope scope("anim.player");
+				// Tag and payload are read in place, not copied like EventText: they are the
+				// behavior graph's own strings, held by the graph while it runs, and this runs for
+				// every animation event (player and enemy graphs), where a checked copy per string
+				// would cost more than the rest of the callback.
 				const std::string_view tag = a_event->tag.c_str() ? a_event->tag.c_str() : "";
 				bool first = false;
 				{
@@ -171,6 +181,7 @@ namespace probe::events
 					return Ctrl::kContinue;
 				}
 				perf::Scope scope("anim.enemy");
+				// Read in place, as in PlayerGraphSink.
 				const std::string_view tag = a_event->tag.c_str() ? a_event->tag.c_str() : "";
 				bool first = false;
 				{
@@ -260,6 +271,102 @@ namespace probe::events
 			return a_actor.form && forms::IsPlayerSide(a_actor.form->AsReference());
 		}
 
+		// --- strings carried by events ----------------------------------------------------------
+
+		// Strings that other plugins or scripts hand to an event are not trusted to be strings.
+		// On 2026-11-23 a menu event carried bytes that looked like a heap address instead of a
+		// name (probably a name that had already been released, not confirmed). About 2 s later
+		// the same thread crashed in another plugin on a one-byte read at the start of a page,
+		// which looks like a string read (also not confirmed). Such text is copied only from
+		// readable memory and up to a limit (text::CopyCString), never read in place.
+		struct EventText
+		{
+			std::string    text;   // the bytes copied, without the terminating zero
+			text::Read     read;   // how the copy ended
+			const char*    bad;    // nullptr, or a text::Classify reason, or "null"
+			std::uintptr_t ptr;    // where the string was
+			std::string    bytes;  // when bad: the first bytes at ptr, zeros included, read with the copy
+		};
+
+		// The address a BSFixedString holds, taken without going through its accessors:
+		// BSFixedString::data() looks at the pool entry in front of the text in builds with
+		// assertions, which is the memory that is not trusted here. The class is standard-layout
+		// with the pointer as its only member, so the object and that member share an address.
+		const char* RawData(const RE::BSFixedString& a_string)
+		{
+			static_assert(std::is_standard_layout_v<RE::BSFixedString>);
+			static_assert(sizeof(RE::BSFixedString) == sizeof(const char*));
+			return *reinterpret_cast<const char* const*>(&a_string);
+		}
+
+		// a_emptyIsBad: whether a missing or empty string is worth marking for this source. A menu
+		// event without a name is unexpected (whether it ever happens for a real menu is not
+		// known: 0.0.8 records had 600 menu lines with an empty name, at regular places such as
+		// right after "Mist Menu" opened, and did not tell a null name from an empty one). Mod
+		// event strings are often empty on purpose, so for them it is not.
+		EventText ReadEventText(const char* a_data, bool a_emptyIsBad)
+		{
+			// Long enough for the longest strings seen (a mod event string of 3,663 bytes in the 0.0.7
+			// records). Text longer than this is cut and marked "<key>Cut", not treated as broken.
+			constexpr std::size_t kMaxText = 4096;
+			constexpr std::size_t kShownBytes = 16;
+			EventText             result{ {}, text::Read::ok, nullptr, reinterpret_cast<std::uintptr_t>(a_data), {} };
+			if (!a_data) {
+				result.bad = a_emptyIsBad ? "null" : nullptr;
+				return result;
+			}
+			// One byte past the limit tells a text of exactly kMaxText bytes from a longer one.
+			result.read = text::CopyCString(a_data, kMaxText + 1, result.text);
+			if (result.read == text::Read::tooLong) {
+				result.text.resize(kMaxText);
+			}
+			result.bad = text::Classify(result.read, result.text, a_emptyIsBad);
+			if (result.bad) {
+				result.bytes = text::CopyBytes(a_data, kShownBytes);
+			}
+			return result;
+		}
+
+		EventText ReadEventText(const RE::BSFixedString& a_string, bool a_emptyIsBad)
+		{
+			return ReadEventText(RawData(a_string), a_emptyIsBad);
+		}
+
+		// Writes the text under a_key, cut at the limit if it was longer ("<key>Cut").
+		// Text that is not clean is not written there; the key is null, as PutChecked does for a
+		// form of the wrong type, and "<key>Text" holds what was copied (escaped), so nothing is
+		// lost. A string that is merely missing or empty keeps "" under a_key. Either way
+		// "<key>Bad" says why, "<key>Ptr" gives the address and "<key>Bytes" the first 16 bytes at
+		// that address (zeros included), read together with the copy.
+		void PutText(Line& a_line, std::string_view a_key, const EventText& a_text)
+		{
+			constexpr std::size_t kShownBytes = 16;
+			const bool            cut = a_text.read == text::Read::tooLong;
+			const auto            shown = cut ? text::WithoutCutSequence(a_text.text) : std::string_view(a_text.text);
+			const bool            missing = a_text.bad && (std::strcmp(a_text.bad, "null") == 0 || std::strcmp(a_text.bad, "empty") == 0);
+			if (a_text.bad && !missing) {
+				a_line.raw(a_key, "null");
+				a_line.str(std::string(a_key) + "Text", shown);
+			} else {
+				a_line.str(a_key, shown);
+			}
+			if (cut) {
+				a_line.flag(std::string(a_key) + "Cut", true);
+			}
+			if (a_text.bad) {
+				a_line.str(std::string(a_key) + "Bad", a_text.bad);
+				a_line.hex(std::string(a_key) + "Ptr", a_text.ptr);
+				if (a_text.ptr) {
+					a_line.str(std::string(a_key) + "Bytes", text::HexBytes(a_text.bytes, kShownBytes));
+				}
+			}
+		}
+
+		void PutText(Line& a_line, std::string_view a_key, const RE::BSFixedString& a_string, bool a_emptyIsBad)
+		{
+			PutText(a_line, a_key, ReadEventText(a_string, a_emptyIsBad));
+		}
+
 		void OnQuestStartStop(const RE::TESQuestStartStopEvent& e)
 		{
 			Line("quest.startstop").str("quest", forms::Key(e.formID)).str("name", QuestName(e.formID))
@@ -287,8 +394,8 @@ namespace probe::events
 				const auto* quest = obj->ownerQuest;
 				const char* qname = quest ? quest->GetName() : nullptr;
 				l.str("quest", forms::Key(quest)).str("name", qname ? qname : "")
-					.num("index", static_cast<std::uint64_t>(obj->index))
-					.str("text", obj->displayText.c_str() ? obj->displayText.c_str() : "");
+					.num("index", static_cast<std::uint64_t>(obj->index));
+				PutText(l, "text", obj->displayText, false);
 			}
 			l.num("old", static_cast<std::int64_t>(e.oldState)).num("new", static_cast<std::int64_t>(e.newState)).emit();
 		}
@@ -304,7 +411,11 @@ namespace probe::events
 		void OnDiscovery(const RE::LocationDiscovery::Event& e)
 		{
 			const char* name = e.mapMarkerData ? e.mapMarkerData->locationName.GetFullName() : nullptr;
-			Line("location.discovered").str("name", name ? name : "").str("worldspace", e.worldspaceID ? e.worldspaceID : "").emit();
+			Line line("location.discovered");
+			line.str("name", name ? name : "");
+			// The worldspace ID is a plain C string from the event; copied like other event text.
+			PutText(line, "worldspace", ReadEventText(e.worldspaceID, false));
+			line.emit();
 		}
 
 		void OnCleared(const RE::LocationCleared::Event&)
@@ -468,7 +579,9 @@ namespace probe::events
 
 		void OnTrackedStat(const RE::TESTrackedStatsEvent& e)
 		{
-			Line("stat").str("name", e.stat.c_str() ? e.stat.c_str() : "").num("value", static_cast<std::int64_t>(e.value)).emit();
+			Line line("stat");
+			PutText(line, "name", e.stat, false);
+			line.num("value", static_cast<std::int64_t>(e.value)).emit();
 		}
 
 		void OnTopicInfo(const RE::TESTopicInfoEvent& e)
@@ -592,7 +705,9 @@ namespace probe::events
 
 		void OnMenu(const RE::MenuOpenCloseEvent& e)
 		{
-			Line("menu").str("name", e.menuName.c_str() ? e.menuName.c_str() : "").flag("opening", e.opening).emit();
+			Line line("menu");
+			PutText(line, "name", e.menuName, true);
+			line.flag("opening", e.opening).emit();
 		}
 
 		void OnAction(const SKSE::ActionEvent& e)
@@ -606,19 +721,34 @@ namespace probe::events
 
 		void OnModEvent(const SKSE::ModCallbackEvent& e)
 		{
-			const std::string_view name = e.eventName.c_str() ? e.eventName.c_str() : "";
-			bool first = false;
-			{
+			// Names and strings come from scripts and other plugins (see EventText).
+			const auto name = ReadEventText(e.eventName, false);
+			bool       first = false;
+			if (name.bad) {
+				// A broken name is not counted (each one may differ, and the map would only grow).
+				// It is logged, since that is the case worth seeing, but only so many times in case
+				// some plugin sends them all the time; the rest are counted in "counts".
+				if (g_badModEventLines.fetch_add(1) >= kMaxBadModEventLines) {
+					g_badModEventsSkipped.fetch_add(1);
+					return;
+				}
+			} else {
 				std::scoped_lock lock(g_countLock);
-				first = Count(g_modEventCounts, name);
+				first = Count(g_modEventCounts, name.text);
 			}
 			const auto* senderRef = e.sender ? e.sender->As<RE::TESObjectREFR>() : nullptr;
 			// Always log the first of each name; later ones only when the player side is involved.
-			if (!first && !forms::IsPlayerSide(senderRef)) {
+			if (!name.bad && !first && !forms::IsPlayerSide(senderRef)) {
 				return;
 			}
-			Line("modevent").str("name", name).str("str", e.strArg.c_str() ? e.strArg.c_str() : "")
-				.num("num", static_cast<double>(e.numArg)).raw("sender", forms::Json(e.sender)).flag("first", first).emit();
+			Line line("modevent");
+			PutText(line, "name", name);
+			PutText(line, "str", e.strArg, false);
+			line.num("num", static_cast<double>(e.numArg)).raw("sender", forms::Json(e.sender));
+			if (!name.bad) {
+				line.flag("first", first);  // "first" is about counted names only
+			}
+			line.emit();
 		}
 	}
 
@@ -778,7 +908,9 @@ namespace probe::events
 		const auto toJson = [](const CountMap& a_map) {
 			std::string json = "{";
 			for (const auto& [name, n] : a_map) {
-				json += std::format("{}\"{}\":{}", json.size() > 1 ? "," : "", Escape(name), n);
+				// Names go through KeyText first: two names that differ only in bytes that are not
+				// UTF-8 would both become U+FFFD and give the object the same key twice.
+				json += std::format("{}\"{}\":{}", json.size() > 1 ? "," : "", Escape(text::KeyText(name)), n);
 			}
 			return json + "}";
 		};
@@ -792,6 +924,7 @@ namespace probe::events
 			mods = toJson(g_modEventCounts);
 		}
 		Line("counts").raw("animTags", anim).raw("enemyAnimTags", enemyAnim).raw("modEvents", mods)
-			.num("effectApplySuppressed", suppressed).emit();
+			.num("effectApplySuppressed", suppressed)
+			.num("badModEventsSkipped", g_badModEventsSkipped.exchange(0)).emit();
 	}
 }
