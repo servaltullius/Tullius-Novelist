@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -43,6 +44,43 @@ namespace probe::text
 	// True if pages with this protection (MEMORY_BASIC_INFORMATION::Protect) can be read.
 	bool IsReadableProtection(unsigned long a_protect) noexcept;
 
+	// The two system calls behind CopyCString and CopyBytes, reported one by one to an observer
+	// so a measurement can tell what each costs and which memory the strings sit in.
+	enum class Call
+	{
+		query,  // VirtualQuery at the read address
+		copy,   // ReadProcessMemory of one chunk
+	};
+
+	struct CallInfo
+	{
+		Call           call;
+		bool           ok;       // query: committed and readable; copy: every byte of the chunk copied
+		double         us;       // time spent in the system call alone
+		std::uintptr_t address;  // where the call looked
+		std::size_t    bytes;    // copy: the chunk asked for; 0 for a query
+		// What VirtualQuery reported (MEMORY_BASIC_INFORMATION); all 0 for a copy, and for a
+		// query that got no answer at all. Windows leaves allocationBase, protect and type
+		// undefined when state is MEM_FREE, and protect undefined when it is MEM_RESERVE; they
+		// are passed on as they came.
+		std::uintptr_t allocationBase;
+		std::uintptr_t regionBase;  // the page holding address, not where the allocation starts
+		std::size_t    regionSize;  // from regionBase to the end of the run of pages alike
+		unsigned long  state;
+		unsigned long  protect;
+		unsigned long  type;
+	};
+
+	class CallObserver
+	{
+	public:
+		// Called right after each call, on the reading thread, before the read goes on.
+		virtual void OnCall(const CallInfo& a_call) = 0;
+
+	protected:
+		~CallObserver() = default;
+	};
+
 	enum class Read
 	{
 		ok,            // copied up to the terminating zero
@@ -57,11 +95,16 @@ namespace probe::text
 	// the memory goes away between the check and the copy, the copy fails instead of faulting.
 	// a_out holds the bytes copied (without the zero), also when the result is not ok. With
 	// a_max 0 nothing is read and the result is unreadable for a null address, else tooLong.
-	Read CopyCString(const char* a_ptr, std::size_t a_max, std::string& a_out);
+	// a_observer, if given, is told about every VirtualQuery and ReadProcessMemory call.
+	// a_chunk: the most bytes one ReadProcessMemory call asks for; 0, or anything above
+	// kMaxChunk, means kMaxChunk. A copy also never crosses a page or region end.
+	inline constexpr std::size_t kMaxChunk = 512;
+	Read CopyCString(const char* a_ptr, std::size_t a_max, std::string& a_out, CallObserver* a_observer = nullptr,
+		std::size_t a_chunk = kMaxChunk);
 
 	// Copies up to a_count bytes from a_ptr the same way, stopping at the first byte that cannot
 	// be read (zeros included, unlike CopyCString). For showing what is really at an address.
-	std::string CopyBytes(const void* a_ptr, std::size_t a_count);
+	std::string CopyBytes(const void* a_ptr, std::size_t a_count, CallObserver* a_observer = nullptr);
 
 	// The text without a UTF-8 sequence cut off at its end (a valid lead byte followed by fewer
 	// continuation bytes than it needs, those in range), for text cut at a length limit. Bytes

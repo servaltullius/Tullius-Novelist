@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #ifndef NOMINMAX
 #	define NOMINMAX
@@ -236,6 +237,188 @@ namespace
 
 		::VirtualFree(base, 0, MEM_RELEASE);
 	}
+
+	struct Recorder final : CallObserver
+	{
+		std::vector<CallInfo> calls;
+		void OnCall(const CallInfo& a_call) override { calls.push_back(a_call); }
+
+		bool AllTimed() const
+		{
+			for (const auto& call : calls) {
+				if (!(call.us >= 0.0)) {
+					return false;
+				}
+			}
+			return true;
+		}
+	};
+
+	void TestObserver()
+	{
+		// Pages: [0] and [1] read-write (one region), [2] reserved only.
+		SYSTEM_INFO info{};
+		::GetSystemInfo(&info);
+		const std::size_t page = info.dwPageSize;
+		auto* base = static_cast<char*>(::VirtualAlloc(nullptr, page * 3, MEM_RESERVE, PAGE_NOACCESS));
+		if (!base) {
+			Check(false, "observer test pages reserved");
+			return;
+		}
+		if (::VirtualAlloc(base, page * 2, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+			Check(false, "observer test pages committed");
+			::VirtualFree(base, 0, MEM_RELEASE);
+			return;
+		}
+		const auto address = [](const void* a_ptr) { return reinterpret_cast<std::uintptr_t>(a_ptr); };
+		std::string out;
+
+		std::memcpy(base, "TrueHUD", 8);
+		Recorder shortText;
+		Check(CopyCString(base, 256, out, &shortText) == Read::ok && out == "TrueHUD", "string read with an observer is the same");
+		Check(shortText.calls.size() == 2 && shortText.calls[0].call == Call::query && shortText.calls[1].call == Call::copy,
+			"string inside one page: one query, one copy");
+		if (shortText.calls.size() == 2) {
+			const auto& query = shortText.calls[0];
+			const auto& copy = shortText.calls[1];
+			Check(query.ok && query.address == address(base) && query.allocationBase == address(base) &&
+					  query.regionBase == address(base) && query.regionSize == page * 2 && query.state == MEM_COMMIT &&
+					  query.protect == PAGE_READWRITE && query.type == MEM_PRIVATE && query.bytes == 0,
+				"query reports the region VirtualQuery gave");
+			Check(copy.ok && copy.address == address(base) && copy.bytes == 256 && copy.allocationBase == 0 && copy.regionSize == 0,
+				"copy reports its chunk and no region");
+		}
+		Check(shortText.AllTimed(), "every call has a time");
+
+		// Across the page boundary inside the region: still one query, then a copy per page.
+		char* tail = base + page - 8;
+		std::memset(tail, 'x', 8);
+		std::memcpy(base + page, "y", 2);
+		Recorder twoPages;
+		Check(CopyCString(tail, 256, out, &twoPages) == Read::ok && out == "xxxxxxxxy", "string across two pages read with an observer");
+		Check(twoPages.calls.size() == 3 && twoPages.calls[0].call == Call::query && twoPages.calls[1].call == Call::copy &&
+				  twoPages.calls[1].bytes == 8 && twoPages.calls[2].call == Call::copy && twoPages.calls[2].bytes == 248 &&
+				  twoPages.calls[2].address == address(base + page),
+			"string across a page boundary: one query, two copies");
+
+		// Reserved memory: the query fails and nothing is copied.
+		Recorder reserved;
+		Check(CopyCString(base + page * 2, 256, out, &reserved) == Read::unreadable, "reserved page unreadable with an observer");
+		Check(reserved.calls.size() == 1 && reserved.calls[0].call == Call::query && !reserved.calls[0].ok &&
+				  reserved.calls[0].state == MEM_RESERVE && reserved.calls[0].allocationBase == address(base),
+			"reserved page: one failed query that still says which allocation it is");
+
+		Recorder bytes;
+		Check(CopyBytes(base, 4, &bytes) == "True", "CopyBytes with an observer");
+		Check(bytes.calls.size() == 2 && bytes.calls[0].call == Call::query && bytes.calls[1].call == Call::copy && bytes.calls[1].bytes == 4,
+			"CopyBytes: one query, one copy of the bytes asked for");
+
+		Recorder none;
+		Check(CopyCString(nullptr, 256, out, &none) == Read::unreadable && none.calls.empty(), "null address makes no call");
+
+		// Smaller copies: same text, more copy calls of at most the size asked for.
+		const std::string longText(600, 'q');
+		std::memcpy(base, longText.c_str(), longText.size() + 1);
+		Recorder shortCopies;
+		Check(CopyCString(base, 4096, out, &shortCopies, 256) == Read::ok && out == longText, "text read in 256-byte copies is the same");
+		Check(shortCopies.calls.size() == 4 && shortCopies.calls[1].bytes == 256 && shortCopies.calls[2].bytes == 256 &&
+				  shortCopies.calls[3].bytes == 256,
+			"600 bytes and a zero in 256-byte copies: one query, three copies");
+		Recorder defaultCopies;
+		Check(CopyCString(base, 4096, out, &defaultCopies, 0) == Read::ok && out == longText && defaultCopies.calls.size() == 3 &&
+				  defaultCopies.calls[1].bytes == kMaxChunk,
+			"chunk 0 means the largest chunk");
+		Recorder over;
+		Check(CopyCString(base, 4096, out, &over, 100000) == Read::ok && over.calls.size() == 3 && over.calls[1].bytes == kMaxChunk,
+			"a chunk above the largest is cut to it");
+		Check(CopyCString(base, 4096, out, nullptr, 1) == Read::ok && out == longText, "one-byte copies still give the text");
+
+		// The length limit shortens the last copy: 257 bytes in 256-byte copies are 256 and 1.
+		Recorder cut;
+		Check(CopyCString(base, 257, out, &cut, 256) == Read::tooLong && out == longText.substr(0, 257), "text cut at 257 bytes");
+		Check(cut.calls.size() == 3 && cut.calls[0].call == Call::query && cut.calls[1].bytes == 256 && cut.calls[2].call == Call::copy &&
+				  cut.calls[2].bytes == 1,
+			"limit of 257 in 256-byte copies: one query, copies of 256 and 1");
+		Recorder nothing;
+		Check(CopyCString(base, 0, out, &nothing) == Read::tooLong && out.empty() && nothing.calls.empty(), "limit 0 makes no call");
+
+		Recorder manyBytes;
+		Check(CopyBytes(base, 600, &manyBytes) == longText, "CopyBytes of 600 bytes with an observer");
+		Check(manyBytes.calls.size() == 3 && manyBytes.calls[1].bytes == kMaxChunk && manyBytes.calls[2].bytes == 600 - kMaxChunk,
+			"CopyBytes of 600 bytes: one query, copies of 512 and 88");
+		Recorder nullBytes;
+		Check(CopyBytes(nullptr, 16, &nullBytes).empty() && nullBytes.calls.empty(), "CopyBytes of a null address makes no call");
+
+		// A string that runs into the reserved page: query, copy, then a failed query.
+		std::memset(base + page * 2 - 8, 'r', 8);
+		Recorder runsOut;
+		Check(CopyCString(base + page * 2 - 8, 256, out, &runsOut) == Read::unterminated && out == "rrrrrrrr", "string into reserved memory with an observer");
+		Check(runsOut.calls.size() == 3 && runsOut.calls[0].call == Call::query && runsOut.calls[1].call == Call::copy &&
+				  runsOut.calls[1].bytes == 8 && runsOut.calls[2].call == Call::query && !runsOut.calls[2].ok,
+			"string into reserved memory: query, copy, failed query");
+
+		// Two regions in one allocation (page 1 read-only): two queries, same allocation, different region ends.
+		DWORD before = 0;
+		Check(::VirtualProtect(base + page, page, PAGE_READONLY, &before) != 0, "observer page 1 made read-only");
+		Recorder regions;
+		Check(CopyCString(tail, 256, out, &regions) == Read::ok && out == "xxxxxxxxy", "string across two regions read with an observer");
+		Check(regions.calls.size() == 4 && regions.calls[0].call == Call::query && regions.calls[2].call == Call::query &&
+				  regions.calls[0].allocationBase == regions.calls[2].allocationBase &&
+				  regions.calls[0].regionBase + regions.calls[0].regionSize == address(base + page) &&
+				  regions.calls[2].regionBase == address(base + page) && regions.calls[2].protect == PAGE_READONLY,
+			"string across two regions: a query per region, same allocation");
+
+		// Timing is real: many calls together take some time.
+		Recorder many;
+		for (int i = 0; i < 200; ++i) {
+			CopyCString(base, 4096, out, &many);
+		}
+		double total = 0.0;
+		for (const auto& call : many.calls) {
+			total += call.us;
+		}
+		Check(many.AllTimed() && total > 0.0, "calls are timed (200 reads take more than zero time)");
+
+		// Committed but not readable: a no-access page and a guard page. One failed query each,
+		// state MEM_COMMIT and the protection as it is; the guard page is not touched.
+		auto* locked = static_cast<char*>(::VirtualAlloc(nullptr, page * 2, MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS));
+		DWORD unused = 0;
+		if (!locked || ::VirtualProtect(locked + page, page, PAGE_READWRITE | PAGE_GUARD, &unused) == 0) {
+			Check(false, "no-access and guard pages made");
+		} else {
+			Recorder noAccess;
+			Check(CopyCString(locked, 256, out, &noAccess) == Read::unreadable && noAccess.calls.size() == 1 &&
+					  !noAccess.calls[0].ok && noAccess.calls[0].state == MEM_COMMIT && noAccess.calls[0].protect == PAGE_NOACCESS,
+				"no-access page: one failed query, committed, PAGE_NOACCESS");
+			Recorder guarded;
+			Check(CopyCString(locked + page, 256, out, &guarded) == Read::unreadable && guarded.calls.size() == 1 &&
+					  !guarded.calls[0].ok && guarded.calls[0].state == MEM_COMMIT && (guarded.calls[0].protect & PAGE_GUARD) != 0,
+				"guard page: one failed query, committed, PAGE_GUARD kept in protect");
+			MEMORY_BASIC_INFORMATION guard{};
+			Check(::VirtualQuery(locked + page, &guard, sizeof(guard)) == sizeof(guard) && (guard.Protect & PAGE_GUARD) != 0,
+				"guard page still a guard page after the observed read");
+		}
+		if (locked) {
+			::VirtualFree(locked, 0, MEM_RELEASE);
+		}
+
+		::VirtualFree(base, 0, MEM_RELEASE);
+
+		// Freed memory: the query answers MEM_FREE (its other fields are undefined) and nothing is copied.
+		Recorder freed;
+		Check(CopyCString(base, 256, out, &freed) == Read::unreadable, "freed memory unreadable with an observer");
+		Check(freed.calls.size() == 1 && freed.calls[0].call == Call::query && !freed.calls[0].ok && freed.calls[0].state == MEM_FREE,
+			"freed memory: one failed query with state MEM_FREE");
+
+		// An address VirtualQuery does not answer for (kernel space): one failed query, all fields 0.
+		const auto* kernel = reinterpret_cast<const char*>(static_cast<std::uintptr_t>(0xFFFF'8000'0000'0000ull));
+		Recorder noAnswer;
+		Check(CopyCString(kernel, 256, out, &noAnswer) == Read::unreadable, "kernel address unreadable");
+		Check(noAnswer.calls.size() == 1 && !noAnswer.calls[0].ok && noAnswer.calls[0].state == 0 && noAnswer.calls[0].allocationBase == 0 &&
+				  noAnswer.calls[0].regionBase == 0 && noAnswer.calls[0].regionSize == 0 && noAnswer.calls[0].protect == 0 &&
+				  noAnswer.calls[0].type == 0,
+			"unanswered query: one call, every region field 0");
+	}
 }
 
 int main()
@@ -247,6 +430,7 @@ int main()
 	TestClassify();
 	TestProtection();
 	TestCopy();
+	TestObserver();
 	std::printf("%s (%d passed, %d failed)\n", g_failed == 0 ? "all passed" : "FAILED", g_passed, g_failed);
 	return g_failed == 0 ? 0 : 1;
 }

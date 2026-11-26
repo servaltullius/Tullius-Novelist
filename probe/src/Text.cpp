@@ -24,24 +24,57 @@ namespace probe::text
 			return page;
 		}
 
+		std::int64_t Ticks() noexcept
+		{
+			LARGE_INTEGER now{};
+			::QueryPerformanceCounter(&now);
+			return now.QuadPart;
+		}
+
+		double TicksToUs(std::int64_t a_ticks) noexcept
+		{
+			static const double ticksPerUs = [] {
+				LARGE_INTEGER frequency{};
+				::QueryPerformanceFrequency(&frequency);
+				return static_cast<double>(frequency.QuadPart) / 1'000'000.0;
+			}();
+			return static_cast<double>(a_ticks) / ticksPerUs;
+		}
+
 		// Reads forward from an address that may not be readable. Each copy stays inside one page
 		// and inside the region VirtualQuery last reported committed and readable, and goes
 		// through ReadProcessMemory, which fails instead of faulting if the memory has gone since.
+		// With an observer, each of those calls is timed and reported; without one nothing is timed.
 		class SafeReader
 		{
 		public:
-			explicit SafeReader(std::uintptr_t a_address) noexcept :
-				_address(a_address)
+			SafeReader(std::uintptr_t a_address, CallObserver* a_observer) noexcept :
+				_address(a_address), _observer(a_observer)
 			{}
 
 			// Copies up to a_want bytes into a_buffer. Returns the bytes copied, 0 when the memory
 			// at the current address cannot be read.
-			std::size_t Next(char* a_buffer, std::size_t a_want) noexcept
+			std::size_t Next(char* a_buffer, std::size_t a_want)
 			{
 				if (_address >= _regionEnd) {
 					MEMORY_BASIC_INFORMATION info{};
-					if (::VirtualQuery(reinterpret_cast<const void*>(_address), &info, sizeof(info)) != sizeof(info) ||
-						info.State != MEM_COMMIT || !IsReadableProtection(info.Protect)) {
+					const auto start = _observer ? Ticks() : 0;
+					const bool answered = ::VirtualQuery(reinterpret_cast<const void*>(_address), &info, sizeof(info)) == sizeof(info);
+					const auto end = _observer ? Ticks() : 0;
+					const bool ok = answered && info.State == MEM_COMMIT && IsReadableProtection(info.Protect);
+					if (_observer) {
+						CallInfo call{ Call::query, ok, TicksToUs(end - start), _address, 0, 0, 0, 0, 0, 0, 0 };
+						if (answered) {
+							call.allocationBase = reinterpret_cast<std::uintptr_t>(info.AllocationBase);
+							call.regionBase = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+							call.regionSize = info.RegionSize;
+							call.state = info.State;
+							call.protect = info.Protect;
+							call.type = info.Type;
+						}
+						_observer->OnCall(call);
+					}
+					if (!ok) {
 						return 0;
 					}
 					_regionEnd = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
@@ -50,9 +83,15 @@ namespace probe::text
 				const auto pageEnd = (_address / page + 1) * page;
 				const auto chunk = static_cast<std::size_t>(
 					std::min<std::uintptr_t>({ a_want, pageEnd - _address, _regionEnd - _address }));
-				SIZE_T copied = 0;
-				if (!::ReadProcessMemory(::GetCurrentProcess(), reinterpret_cast<const void*>(_address), a_buffer, chunk, &copied) ||
-					copied != chunk) {
+				SIZE_T     copied = 0;
+				const auto start = _observer ? Ticks() : 0;
+				const bool read = ::ReadProcessMemory(::GetCurrentProcess(), reinterpret_cast<const void*>(_address), a_buffer, chunk, &copied) != FALSE;
+				const auto end = _observer ? Ticks() : 0;
+				const bool ok = read && copied == chunk;
+				if (_observer) {
+					_observer->OnCall({ Call::copy, ok, TicksToUs(end - start), _address, chunk, 0, 0, 0, 0, 0, 0 });
+				}
+				if (!ok) {
 					return 0;
 				}
 				_address += chunk;
@@ -62,6 +101,7 @@ namespace probe::text
 		private:
 			std::uintptr_t _address;
 			std::uintptr_t _regionEnd{ 0 };
+			CallObserver*  _observer;
 		};
 
 		// What a lead byte of a well-formed UTF-8 sequence allows (Unicode 15, table 3-7): the
@@ -281,17 +321,18 @@ namespace probe::text
 		return (a_protect & readable) != 0;
 	}
 
-	Read CopyCString(const char* a_ptr, std::size_t a_max, std::string& a_out)
+	Read CopyCString(const char* a_ptr, std::size_t a_max, std::string& a_out, CallObserver* a_observer, std::size_t a_chunk)
 	{
 		a_out.clear();
 		if (!a_ptr) {
 			return Read::unreadable;
 		}
-		SafeReader  reader(reinterpret_cast<std::uintptr_t>(a_ptr));
-		char        buffer[512];
+		SafeReader  reader(reinterpret_cast<std::uintptr_t>(a_ptr), a_observer);
+		char        buffer[kMaxChunk];
+		const auto  chunk = a_chunk == 0 ? sizeof(buffer) : std::min(a_chunk, sizeof(buffer));
 		std::size_t left = a_max;
 		while (left > 0) {
-			const auto copied = reader.Next(buffer, std::min(left, sizeof(buffer)));
+			const auto copied = reader.Next(buffer, std::min(left, chunk));
 			if (copied == 0) {
 				return a_out.empty() ? Read::unreadable : Read::unterminated;
 			}
@@ -305,14 +346,14 @@ namespace probe::text
 		return Read::tooLong;
 	}
 
-	std::string CopyBytes(const void* a_ptr, std::size_t a_count)
+	std::string CopyBytes(const void* a_ptr, std::size_t a_count, CallObserver* a_observer)
 	{
 		std::string result;
 		if (!a_ptr) {
 			return result;
 		}
-		SafeReader reader(reinterpret_cast<std::uintptr_t>(a_ptr));
-		char       buffer[512];
+		SafeReader reader(reinterpret_cast<std::uintptr_t>(a_ptr), a_observer);
+		char       buffer[kMaxChunk];
 		while (result.size() < a_count) {
 			const auto copied = reader.Next(buffer, std::min(a_count - result.size(), sizeof(buffer)));
 			if (copied == 0) {

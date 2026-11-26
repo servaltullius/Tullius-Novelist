@@ -45,9 +45,17 @@ namespace probe
 		void BumpGeneration();
 	}
 
-	// Per-callback timing. Aggregated in memory, dumped by the poller as "perf" lines.
+	// Per-callback timing. Aggregated in memory, dumped as "perf" lines by the poller (every 10 s)
+	// and at each game start. Two dumps can run at once; each line covers what came in since the
+	// dump before it, so add counts and avgUs x count per name across lines.
+	// Names are kept by address: pass string literals (or other text that lives as long as the process).
 	namespace perf
 	{
+		// Adds one timing measured elsewhere (Scope adds its own when it ends).
+		void Add(const char* a_name, double a_us);
+		// Writes a "perf.clock" line: the clock frequency and what one clock read costs.
+		void ReportClock();
+
 		struct Scope
 		{
 			explicit Scope(const char* a_name);

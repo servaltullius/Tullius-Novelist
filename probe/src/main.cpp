@@ -81,6 +81,7 @@ namespace
 		case M::kDataLoaded:
 			probe::events::RegisterGlobal();
 			probe::poller::Start();
+			probe::perf::ReportClock();
 			break;
 		case M::kPreLoadGame:
 			probe::session::OnPreLoad();

@@ -134,8 +134,14 @@ namespace probe::poller
 						g_samplePending.store(false);
 					}
 				}
-				if (++ticks % 60 == 0) {  // every 30 s
+				++ticks;
+				// Timings every 10 s (30 s up to 0.0.9): many test runs end a few seconds after the
+				// save loads, and in 0.0.9 three of seven such runs ended before the first dump, so
+				// their timings were never written. Counts stay at 30 s; their maps are written in full.
+				if (ticks % 20 == 0) {
 					perf::Dump();
+				}
+				if (ticks % 60 == 0) {
 					events::DumpCounters();
 				}
 			}

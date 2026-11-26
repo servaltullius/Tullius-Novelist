@@ -27,6 +27,12 @@ namespace probe::session
 			poller::ResetBaseline();
 			forms::ResetTeammates();
 			world::Reset();
+			// Timings up to here (main menu and loading) are written now, not at the next 10 s
+			// tick: many test runs end a few seconds after the game starts. Those "perf" lines
+			// carry the new game's gen although they cover the time before it, and on a start found
+			// by the poller ("world") this dump is timed inside that "poll.sample".
+			perf::Dump();
+			out::FlushSoon();
 		}
 	}
 

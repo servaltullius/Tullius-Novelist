@@ -317,9 +317,10 @@ namespace probe
 				std::uint64_t count{ 0 };
 				double        totalUs{ 0 };
 				double        maxUs{ 0 };
-				std::vector<float> samples;  // bounded reservoir for percentiles
+				std::vector<float> samples;  // for percentiles: the latest kMaxSamples timings since the last dump
 			};
 
+			constexpr std::size_t                        kMaxSamples = 4096;
 			std::mutex                                   g_perfLock;
 			std::unordered_map<std::string_view, Stat>   g_stats;
 		}
@@ -330,18 +331,48 @@ namespace probe
 
 		Scope::~Scope()
 		{
-			const double us = static_cast<double>(Qpc() - _start) * 1'000'000.0 / static_cast<double>(g_qpcFreq);
-			std::scoped_lock lock(g_perfLock);
-			auto& s = g_stats[_name];
-			++s.count;
-			s.totalUs += us;
-			if (us > s.maxUs) {
-				s.maxUs = us;
+			Add(_name, static_cast<double>(Qpc() - _start) * 1'000'000.0 / static_cast<double>(g_qpcFreq));
+		}
+
+		void ReportClock()
+		{
+			// The timings read this clock around calls of a few microseconds, so what one read
+			// costs on this machine is worth having next to them. Measured in batches of reads:
+			// a batch during which the thread was switched out comes out high, so the median
+			// batch is the figure to use; the lowest and highest show the spread.
+			constexpr int                 kReads = 1000;
+			constexpr int                 kBatches = 21;
+			std::array<double, kBatches>  readNs{};
+			for (auto& batch : readNs) {
+				const auto start = Qpc();
+				auto       last = start;
+				for (int i = 0; i < kReads; ++i) {
+					last = Qpc();
+				}
+				batch = static_cast<double>(last - start) * 1'000'000'000.0 / static_cast<double>(g_qpcFreq) / kReads;
 			}
-			if (s.samples.size() < 4096) {
-				s.samples.push_back(static_cast<float>(us));
+			std::ranges::sort(readNs);
+			Line("perf.clock").num("qpcHz", g_qpcFreq).num("batches", kBatches).num("readsPerBatch", kReads)
+				.num("readNs", readNs[kBatches / 2]).num("readNsMin", readNs.front()).num("readNsMax", readNs.back())
+				.emit();
+		}
+
+		void Add(const char* a_name, double a_us)
+		{
+			std::scoped_lock lock(g_perfLock);
+			auto& s = g_stats[a_name];
+			++s.count;
+			s.totalUs += a_us;
+			if (a_us > s.maxUs) {
+				s.maxUs = a_us;
+			}
+			// A ring: once full, each timing replaces the oldest. A name timed more than
+			// kMaxSamples times between dumps gets percentiles of its latest timings only, while
+			// count, avgUs and maxUs cover all of them.
+			if (s.samples.size() < kMaxSamples) {
+				s.samples.push_back(static_cast<float>(a_us));
 			} else {
-				s.samples[s.count % 4096] = static_cast<float>(us);
+				s.samples[(s.count - 1) % kMaxSamples] = static_cast<float>(a_us);
 			}
 		}
 
