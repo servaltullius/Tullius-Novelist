@@ -2,62 +2,188 @@
 #include "Out.h"
 #include "Text.h"
 
+#include <cstddef>
+#include <cstring>
+
 namespace probe::forms
 {
 	namespace
 	{
-		std::mutex                    g_teamLock;
+		std::mutex                     g_teamLock;
 		std::unordered_set<RE::FormID> g_team;
 
 		using PtrList = std::vector<std::uintptr_t>;
 		std::atomic<std::shared_ptr<const PtrList>> g_teamPtrs{ std::make_shared<const PtrList>() };
-	}
+		std::atomic_bool                            g_selfTested{ false };
 
-	namespace
-	{
-		bool IsReadable(const void* a_ptr, std::size_t a_size)
+		bool IsAligned8(const void* a_ptr) noexcept
 		{
-			if (!a_ptr) {
-				return false;
-			}
-			MEMORY_BASIC_INFORMATION mbi{};
-			if (::VirtualQuery(a_ptr, &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
-				return false;
-			}
-			// Execute-only pages are not readable either.
-			if (!text::IsReadableProtection(mbi.Protect)) {
-				return false;
-			}
-			const auto start = reinterpret_cast<std::uintptr_t>(a_ptr);
-			const auto regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-			return start + a_size <= regionEnd;
+			return (reinterpret_cast<std::uintptr_t>(a_ptr) & 7u) == 0;
 		}
 
-		bool HasGameVtable(const void* a_ptr)
+		bool IsGameVtable(std::uintptr_t a_vtbl)
 		{
-			const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(a_ptr);
+			if ((a_vtbl & 7u) != 0) {
+				return false;
+			}
 			const auto rdata = REL::Module::get().segment(REL::Segment::rdata);
 			const auto begin = rdata.address();
-			return vtbl >= begin && vtbl < begin + rdata.size();
+			return a_vtbl >= begin && a_vtbl < begin + rdata.size();
 		}
 	}
 
-	bool IsGameObject(const void* a_ptr)
+	const char* ObjectCheckName(ObjectCheck a_check) noexcept
 	{
-		return IsReadable(a_ptr, sizeof(void*)) && HasGameVtable(a_ptr);
+		switch (a_check) {
+		case ObjectCheck::ok:
+			return "ok";
+		case ObjectCheck::null:
+			return "null";
+		case ObjectCheck::unaligned:
+			return "unaligned";
+		case ObjectCheck::unreadable:
+			return "unreadable";
+		case ObjectCheck::notGameVtable:
+			return "notGameVtable";
+		}
+		return "unknown";
 	}
 
-	const RE::TESForm* VerifiedForm(const void* a_ptr)
+	void CopyTiming::OnCall(const text::CallInfo& a_call) noexcept
 	{
-		// The whole TESForm header has to be readable before the form ID is taken from it.
-		if (!IsReadable(a_ptr, sizeof(RE::TESForm)) || !HasGameVtable(a_ptr)) {
+		perf::Add(_perfName, a_call.us);
+	}
+
+	ObjectCheck CheckGameObject(const void* a_ptr, text::CallObserver* a_observer)
+	{
+		if (!a_ptr) {
+			return ObjectCheck::null;
+		}
+		if (!IsAligned8(a_ptr)) {
+			return ObjectCheck::unaligned;
+		}
+		std::uintptr_t vtbl = 0;
+		if (!text::CopyExact(a_ptr, &vtbl, sizeof(vtbl), a_observer)) {
+			return ObjectCheck::unreadable;
+		}
+		return IsGameVtable(vtbl) ? ObjectCheck::ok : ObjectCheck::notGameVtable;
+	}
+
+	const RE::TESForm* VerifiedForm(const void* a_ptr, text::CallObserver* a_observer)
+	{
+		static_assert(sizeof(RE::TESForm) == 0x20);
+		static_assert(offsetof(RE::TESForm, formID) == 0x14);
+		static_assert(sizeof(RE::FormID) == 4);
+
+		if (!a_ptr || !IsAligned8(a_ptr)) {
 			return nullptr;
 		}
+		alignas(8) std::byte header[sizeof(RE::TESForm)]{};
+		if (!text::CopyExact(a_ptr, header, sizeof(header), a_observer)) {
+			return nullptr;
+		}
+		std::uintptr_t vtbl = 0;
+		std::memcpy(&vtbl, header, sizeof(vtbl));
+		if (!IsGameVtable(vtbl)) {
+			return nullptr;
+		}
+		RE::FormID id = 0;
+		std::memcpy(&id, header + offsetof(RE::TESForm, formID), sizeof(id));
 		const auto* form = static_cast<const RE::TESForm*>(a_ptr);
-		const auto  id = form->GetFormID();
 		// A real form is the one the game returns for its own ID. Anything else that merely looks
 		// like an object (a stale pointer, a field that is not a form at all) fails here.
 		return id != 0 && RE::TESForm::LookupByID(id) == form ? form : nullptr;
+	}
+
+	void RunSelfTestOnce()
+	{
+		if (g_selfTested.exchange(true)) {
+			return;
+		}
+
+		const auto* const        player = RE::PlayerCharacter::GetSingleton();
+		const RE::TESForm* const playerBase = player;
+		bool                     pass = true;
+		std::uint64_t            skipped = 0;
+
+		const char* playerRes = "skipped";
+		if (player) {
+			const auto r = CheckGameObject(player);
+			playerRes = ObjectCheckName(r);
+			pass = pass && r == ObjectCheck::ok;
+		} else {
+			++skipped;
+		}
+
+		const auto  lowCheck = CheckGameObject(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x46)));
+		const char* lowRes = ObjectCheckName(lowCheck);
+		pass = pass && lowCheck == ObjectCheck::unaligned;
+
+		const auto  lowAlignedCheck = CheckGameObject(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x40)));
+		const char* lowAlignedRes = ObjectCheckName(lowAlignedCheck);
+		pass = pass && lowAlignedCheck == ObjectCheck::unreadable;
+
+		alignas(8) std::uint64_t zero = 0;
+		const auto               localCheck = CheckGameObject(&zero);
+		const char*              localRes = ObjectCheckName(localCheck);
+		pass = pass && localCheck == ObjectCheck::notGameVtable;
+
+		const char* decommittedRes = "skipped";
+		SYSTEM_INFO sys{};
+		::GetSystemInfo(&sys);
+		void* page = ::VirtualAlloc(nullptr, sys.dwPageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		if (page) {
+			if (::VirtualFree(page, sys.dwPageSize, MEM_DECOMMIT) != 0) {
+				const auto r = CheckGameObject(page);
+				decommittedRes = ObjectCheckName(r);
+				pass = pass && r == ObjectCheck::unreadable;
+			} else {
+				++skipped;
+			}
+			::VirtualFree(page, 0, MEM_RELEASE);
+		} else {
+			++skipped;
+		}
+
+		const auto formResultName = [playerBase](const RE::TESForm* a_form) -> const char* {
+			if (!a_form) {
+				return "null";
+			}
+			return a_form == playerBase ? "player" : "other";
+		};
+
+		const char* playerFormRes = "skipped";
+		const char* headerCopyRes = "skipped";
+		if (player) {
+			const auto* pf = VerifiedForm(player);
+			playerFormRes = formResultName(pf);
+			pass = pass && pf == playerBase;
+
+			alignas(8) std::byte copiedHeader[sizeof(RE::TESForm)]{};
+			if (text::CopyExact(player, copiedHeader, sizeof(copiedHeader))) {
+				const auto* copyForm = VerifiedForm(copiedHeader);
+				headerCopyRes = formResultName(copyForm);
+				pass = pass && copyForm == nullptr;
+			} else {
+				++skipped;
+			}
+		} else {
+			skipped += 2;
+		}
+
+		pass = pass && skipped == 0;
+
+		Line("form.selfTest")
+			.flag("pass", pass)
+			.num("skipped", skipped)
+			.str("player", playerRes)
+			.str("low", lowRes)
+			.str("lowAligned", lowAlignedRes)
+			.str("localBuffer", localRes)
+			.str("decommittedPage", decommittedRes)
+			.str("playerForm", playerFormRes)
+			.str("headerCopy", headerCopyRes)
+			.emit();
 	}
 
 	void PublishTeammatePointers()

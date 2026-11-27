@@ -52,7 +52,7 @@ namespace probe
 	namespace perf
 	{
 		// Adds one timing measured elsewhere (Scope adds its own when it ends).
-		void Add(const char* a_name, double a_us);
+		void Add(const char* a_name, double a_us) noexcept;
 		// Writes a "perf.clock" line: the clock frequency and what one clock read costs.
 		void ReportClock();
 

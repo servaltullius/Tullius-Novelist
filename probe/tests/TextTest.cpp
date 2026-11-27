@@ -156,15 +156,6 @@ namespace
 		Check(std::strcmp(Classify(Read::tooLong, "a\x01\xEB\x93", false), "notText") == 0, "cut text with a control character is notText");
 	}
 
-	void TestProtection()
-	{
-		Check(IsReadableProtection(PAGE_READWRITE) && IsReadableProtection(PAGE_READONLY) && IsReadableProtection(PAGE_EXECUTE_READ),
-			"readable protections");
-		Check(!IsReadableProtection(PAGE_READWRITE | PAGE_GUARD) && !IsReadableProtection(PAGE_NOACCESS) &&
-				  !IsReadableProtection(PAGE_EXECUTE) && !IsReadableProtection(0),
-			"guard, no-access, execute-only and none are not readable");
-	}
-
 	void TestCopy()
 	{
 		std::string out = "left over";
@@ -445,6 +436,16 @@ namespace
 		return ::VirtualQuery(a_ptr, &mbi, sizeof(mbi)) == sizeof(mbi) && mbi.State == MEM_COMMIT && (mbi.Protect & PAGE_GUARD) != 0;
 	}
 
+	bool AllByte(const unsigned char* a_buf, std::size_t a_count, unsigned char a_val) noexcept
+	{
+		for (std::size_t i = 0; i < a_count; ++i) {
+			if (a_buf[i] != a_val) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	void TestGuardPages()
 	{
 		constexpr std::size_t kMaxProbeRead = 4097;
@@ -486,6 +487,25 @@ namespace
 			"RW guard page CopyBytes attempted one kMaxChunk copy");
 		Check(HasGuardBit(base + page), "RW guard page keeps PAGE_GUARD after CopyBytes");
 
+		unsigned char exactBuf[48];
+		std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+		Recorder rwExactDirect;
+		Check(!CopyExact(base + page, exactBuf, 8, &rwExactDirect) && rwExactDirect.calls.size() == 1 &&
+				  !rwExactDirect.calls[0].ok && rwExactDirect.calls[0].address == address(base + page) &&
+				  rwExactDirect.calls[0].bytes == 8 && AllByte(exactBuf, sizeof(exactBuf), 0xCC),
+			"RW guard page direct CopyExact returns false after one 8-byte copy without writing output");
+		Check(HasGuardBit(base + page), "RW guard page keeps PAGE_GUARD after direct CopyExact");
+
+		std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+		Recorder rwExactCross;
+		Check(!CopyExact(base + page - 8, exactBuf, 32, &rwExactCross) && rwExactCross.calls.size() == 2 &&
+				  rwExactCross.calls[0].ok && rwExactCross.calls[0].address == address(base + page - 8) &&
+				  rwExactCross.calls[0].bytes == 8 && !rwExactCross.calls[1].ok &&
+				  rwExactCross.calls[1].address == address(base + page) && rwExactCross.calls[1].bytes == 24 &&
+				  std::memcmp(exactBuf, "aaaaaaaa", 8) == 0 && AllByte(exactBuf + 32, sizeof(exactBuf) - 32, 0xCC),
+			"CopyExact entering RW guard page copies prefix, fails at guard page, and keeps sentinel");
+		Check(HasGuardBit(base + page), "RW guard page keeps PAGE_GUARD after cross-page CopyExact");
+
 		// Read-only guard page.
 		Check(::VirtualProtect(base + page, page, PAGE_READONLY | PAGE_GUARD, &old) != 0, "private page 1 set to PAGE_READONLY|PAGE_GUARD");
 
@@ -510,6 +530,23 @@ namespace
 				  roBytes.calls[0].bytes == kMaxChunk,
 			"RO guard page CopyBytes returns empty after one kMaxChunk copy");
 		Check(HasGuardBit(base + page), "RO guard page keeps PAGE_GUARD after CopyBytes");
+
+		std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+		Recorder roExactDirect;
+		Check(!CopyExact(base + page, exactBuf, 8, &roExactDirect) && roExactDirect.calls.size() == 1 &&
+				  !roExactDirect.calls[0].ok && roExactDirect.calls[0].address == address(base + page) &&
+				  roExactDirect.calls[0].bytes == 8 && AllByte(exactBuf, sizeof(exactBuf), 0xCC),
+			"RO guard page direct CopyExact returns false after one 8-byte copy without writing output");
+		Check(HasGuardBit(base + page), "RO guard page keeps PAGE_GUARD after direct CopyExact");
+
+		std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+		Recorder roExactCross;
+		Check(!CopyExact(base + page - 8, exactBuf, 32, &roExactCross) && roExactCross.calls.size() == 2 &&
+				  roExactCross.calls[0].ok && roExactCross.calls[0].bytes == 8 && !roExactCross.calls[1].ok &&
+				  roExactCross.calls[1].address == address(base + page) && roExactCross.calls[1].bytes == 24 &&
+				  std::memcmp(exactBuf, "aaaaaaaa", 8) == 0 && AllByte(exactBuf + 32, sizeof(exactBuf) - 32, 0xCC),
+			"CopyExact entering RO guard page copies prefix, fails at guard page, and keeps sentinel");
+		Check(HasGuardBit(base + page), "RO guard page keeps PAGE_GUARD after cross-page CopyExact");
 
 		::VirtualFree(base, 0, MEM_RELEASE);
 
@@ -548,6 +585,23 @@ namespace
 						  mapBytes.calls[0].bytes == kMaxChunk,
 					"mapped guard page CopyBytes returns empty after one kMaxChunk copy");
 				Check(HasGuardBit(view + page), "mapped guard page keeps PAGE_GUARD after CopyBytes");
+
+				std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+				Recorder mapExactDirect;
+				Check(!CopyExact(view + page, exactBuf, 8, &mapExactDirect) && mapExactDirect.calls.size() == 1 &&
+						  !mapExactDirect.calls[0].ok && mapExactDirect.calls[0].address == address(view + page) &&
+						  mapExactDirect.calls[0].bytes == 8 && AllByte(exactBuf, sizeof(exactBuf), 0xCC),
+					"mapped guard page direct CopyExact returns false after one 8-byte copy without writing output");
+				Check(HasGuardBit(view + page), "mapped guard page keeps PAGE_GUARD after direct CopyExact");
+
+				std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+				Recorder mapExactCross;
+				Check(!CopyExact(view + page - 8, exactBuf, 32, &mapExactCross) && mapExactCross.calls.size() == 2 &&
+						  mapExactCross.calls[0].ok && mapExactCross.calls[0].bytes == 8 && !mapExactCross.calls[1].ok &&
+						  mapExactCross.calls[1].address == address(view + page) && mapExactCross.calls[1].bytes == 24 &&
+						  std::memcmp(exactBuf, "mmmmmmmm", 8) == 0 && AllByte(exactBuf + 32, sizeof(exactBuf) - 32, 0xCC),
+					"CopyExact entering mapped guard page copies prefix, fails at guard page, and keeps sentinel");
+				Check(HasGuardBit(view + page), "mapped guard page keeps PAGE_GUARD after cross-page CopyExact");
 
 				::UnmapViewOfFile(view);
 			}
@@ -691,6 +745,20 @@ namespace
 					  bytesRec.calls[0].address == ctx.guardAddr && bytesRec.calls[0].bytes == kMaxChunk,
 				"CopyBytes on live thread stack guard page returns empty after one kMaxChunk copy");
 
+			unsigned char exactBuf[40];
+			std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+			Recorder exactRec8;
+			Check(!CopyExact(guardPtr, exactBuf, 8, &exactRec8) && exactRec8.calls.size() == 1 && !exactRec8.calls[0].ok &&
+					  exactRec8.calls[0].address == ctx.guardAddr && exactRec8.calls[0].bytes == 8 &&
+					  AllByte(exactBuf, sizeof(exactBuf), 0xCC),
+				"CopyExact (8 bytes) on live thread stack guard page returns false after one 8-byte copy without writing output");
+			std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+			Recorder exactRec32;
+			Check(!CopyExact(guardPtr, exactBuf, 32, &exactRec32) && exactRec32.calls.size() == 1 && !exactRec32.calls[0].ok &&
+					  exactRec32.calls[0].address == ctx.guardAddr && exactRec32.calls[0].bytes == 32 &&
+					  AllByte(exactBuf, sizeof(exactBuf), 0xCC),
+				"CopyExact (32 bytes) on live thread stack guard page returns false after one 32-byte copy without writing output");
+
 			Check(HasGuardBit(guardPtr), "live thread stack guard page keeps PAGE_GUARD after reads");
 		}
 
@@ -729,6 +797,233 @@ namespace
 		} __except (::GetExceptionCode() == a_code ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
 			return true;
 		}
+	}
+
+	void TestCopyExact()
+	{
+		const std::size_t page = SystemPageSize();
+		const auto        address = [](const void* a_ptr) { return reinterpret_cast<std::uintptr_t>(a_ptr); };
+		const auto        staysInPage = [page](const CallInfo& a_call) {
+			return a_call.bytes > 0 && a_call.bytes <= kMaxChunk && (a_call.address % page) + a_call.bytes <= page;
+		};
+
+		// Pages: [0] read-write, [1] reserved only, [2] read-write, [3] guard, [4] permanently reserved only.
+		auto* base = static_cast<unsigned char*>(::VirtualAlloc(nullptr, page * 5, MEM_RESERVE, PAGE_NOACCESS));
+		if (!base) {
+			Check(false, "CopyExact test pages reserved");
+			return;
+		}
+		const bool committed = ::VirtualAlloc(base, page, MEM_COMMIT, PAGE_READWRITE) != nullptr &&
+		                       ::VirtualAlloc(base + page * 2, page, MEM_COMMIT, PAGE_READWRITE) != nullptr &&
+		                       ::VirtualAlloc(base + page * 3, page, MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD) != nullptr;
+		Check(committed, "CopyExact test pages committed");
+		if (!committed) {
+			::VirtualFree(base, 0, MEM_RELEASE);
+			return;
+		}
+
+		// Fill page 0 and page 2 with non-trivial bytes including embedded zeros.
+		for (std::size_t i = 0; i < page; ++i) {
+			base[i] = (i % 7 == 0) ? 0u : static_cast<unsigned char>((i * 37 + 13) & 0xFF);
+			base[page * 2 + i] = (i % 5 == 0) ? 0u : static_cast<unsigned char>((i * 53 + 7) & 0xFF);
+		}
+
+		// Single-page 8-byte and 32-byte copies.
+		unsigned char buf[640];
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder rec8;
+		Check(CopyExact(base + 16, buf, 8, &rec8) && std::memcmp(buf, base + 16, 8) == 0 && AllByte(buf + 8, 16, 0xCC),
+			"CopyExact 8 bytes inside one page succeeds with matching bytes and intact sentinel");
+		Check(rec8.calls.size() == 1 && rec8.calls[0].ok && rec8.calls[0].address == address(base + 16) &&
+				  rec8.calls[0].bytes == 8 && rec8.AllTimed(),
+			"CopyExact 8 bytes inside one page makes one timed call");
+
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder rec32;
+		Check(CopyExact(base + 64, buf, 32, &rec32) && std::memcmp(buf, base + 64, 32) == 0 && AllByte(buf + 32, 16, 0xCC),
+			"CopyExact 32 bytes inside one page succeeds with matching bytes and intact sentinel");
+		Check(rec32.calls.size() == 1 && rec32.calls[0].ok && rec32.calls[0].address == address(base + 64) &&
+				  rec32.calls[0].bytes == 32 && rec32.AllTimed(),
+			"CopyExact 32 bytes inside one page makes one timed call");
+
+		// Unobserved CopyExact also succeeds.
+		std::memset(buf, 0xCC, sizeof(buf));
+		Check(CopyExact(base + 64, buf, 32) && std::memcmp(buf, base + 64, 32) == 0 && AllByte(buf + 32, 16, 0xCC),
+			"CopyExact without observer copies 32 bytes cleanly");
+
+		// Exact page end (page - 8 and page - 32) right before an unreadable (reserved) page.
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder end8;
+		Check(CopyExact(base + page - 8, buf, 8, &end8) && std::memcmp(buf, base + page - 8, 8) == 0 &&
+				  end8.calls.size() == 1 && end8.calls[0].ok && end8.calls[0].address == address(base + page - 8) &&
+				  end8.calls[0].bytes == 8 && AllByte(buf + 8, 16, 0xCC),
+			"CopyExact 8 bytes ending at page end before reserved page succeeds in one call");
+
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder end32;
+		Check(CopyExact(base + page - 32, buf, 32, &end32) && std::memcmp(buf, base + page - 32, 32) == 0 &&
+				  end32.calls.size() == 1 && end32.calls[0].ok && end32.calls[0].address == address(base + page - 32) &&
+				  end32.calls[0].bytes == 32 && AllByte(buf + 32, 16, 0xCC),
+			"CopyExact 32 bytes ending at page end before reserved page succeeds in one call");
+
+		// Cross-page 32 bytes into reserved page: false, 1 ok + 1 fail, prefix copied, sentinel past a_count intact.
+		std::memset(buf, 0xAA, sizeof(buf));
+		Recorder crossReserved;
+		Check(!CopyExact(base + page - 12, buf, 32, &crossReserved) && crossReserved.calls.size() == 2 &&
+				  crossReserved.calls[0].ok && crossReserved.calls[0].address == address(base + page - 12) &&
+				  crossReserved.calls[0].bytes == 12 && !crossReserved.calls[1].ok &&
+				  crossReserved.calls[1].address == address(base + page) && crossReserved.calls[1].bytes == 20,
+			"CopyExact 32 bytes crossing into reserved page makes 1 ok call and 1 failed call");
+		Check(std::memcmp(buf, base + page - 12, 12) == 0 && AllByte(buf + 32, 32, 0xAA),
+			"CopyExact partial failure into reserved page keeps prefix and leaves bytes past a_count untouched");
+
+		// Cross-page 32 bytes into guard page: false, 1 ok + 1 fail, guard stays intact, sentinel intact.
+		std::memset(buf, 0xAA, sizeof(buf));
+		Recorder crossGuard;
+		Check(!CopyExact(base + page * 3 - 12, buf, 32, &crossGuard) && crossGuard.calls.size() == 2 &&
+				  crossGuard.calls[0].ok && crossGuard.calls[0].address == address(base + page * 3 - 12) &&
+				  crossGuard.calls[0].bytes == 12 && !crossGuard.calls[1].ok &&
+				  crossGuard.calls[1].address == address(base + page * 3) && crossGuard.calls[1].bytes == 20,
+			"CopyExact 32 bytes crossing into guard page makes 1 ok call and 1 failed call");
+		Check(std::memcmp(buf, base + page * 3 - 12, 12) == 0 && AllByte(buf + 32, 32, 0xAA) &&
+				  HasGuardBit(base + page * 3),
+			"CopyExact partial failure into guard page keeps prefix, sentinel, and PAGE_GUARD");
+
+		// Commit page 1 as PAGE_NOACCESS: test page-end before no-access, cross into no-access, and
+		// cross starting on no-access page into readable page 2.
+		Check(::VirtualAlloc(base + page, page, MEM_COMMIT, PAGE_NOACCESS) != nullptr,
+			"CopyExact page 1 committed as PAGE_NOACCESS");
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder endNoAcc8;
+		Check(CopyExact(base + page - 8, buf, 8, &endNoAcc8) && std::memcmp(buf, base + page - 8, 8) == 0 &&
+				  endNoAcc8.calls.size() == 1 && endNoAcc8.calls[0].ok && endNoAcc8.calls[0].bytes == 8,
+			"CopyExact 8 bytes ending at page end before PAGE_NOACCESS succeeds in one call");
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder endNoAcc32;
+		Check(CopyExact(base + page - 32, buf, 32, &endNoAcc32) && std::memcmp(buf, base + page - 32, 32) == 0 &&
+				  endNoAcc32.calls.size() == 1 && endNoAcc32.calls[0].ok && endNoAcc32.calls[0].bytes == 32,
+			"CopyExact 32 bytes ending at page end before PAGE_NOACCESS succeeds in one call");
+
+		std::memset(buf, 0xAA, sizeof(buf));
+		Recorder crossNoAcc;
+		Check(!CopyExact(base + page - 12, buf, 32, &crossNoAcc) && crossNoAcc.calls.size() == 2 &&
+				  crossNoAcc.calls[0].ok && crossNoAcc.calls[0].bytes == 12 && !crossNoAcc.calls[1].ok &&
+				  crossNoAcc.calls[1].address == address(base + page) && crossNoAcc.calls[1].bytes == 20 &&
+				  std::memcmp(buf, base + page - 12, 12) == 0 && AllByte(buf + 32, 32, 0xAA),
+			"CopyExact 32 bytes crossing into PAGE_NOACCESS fails on second call and keeps sentinel");
+
+		std::memset(buf, 0xAA, sizeof(buf));
+		Recorder frontNoAcc;
+		Check(!CopyExact(base + page * 2 - 12, buf, 32, &frontNoAcc) && frontNoAcc.calls.size() == 1 &&
+				  !frontNoAcc.calls[0].ok && frontNoAcc.calls[0].address == address(base + page * 2 - 12) &&
+				  frontNoAcc.calls[0].bytes == 12 && AllByte(buf, 64, 0xAA),
+			"CopyExact crossing from PAGE_NOACCESS into readable page fails in 1 call with no second call");
+
+		// Make page 1 readable (RW) and fill with embedded zeros.
+		DWORD oldProtect = 0;
+		Check(::VirtualProtect(base + page, page, PAGE_READWRITE, &oldProtect) != 0,
+			"CopyExact page 1 changed to PAGE_READWRITE");
+		for (std::size_t i = 0; i < page; ++i) {
+			base[page + i] = (i % 6 == 0) ? 0u : static_cast<unsigned char>((i * 41 + 19) & 0xFF);
+		}
+
+		// Cross-page 32 bytes across two readable pages: true, 2 calls.
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder crossRw;
+		Check(CopyExact(base + page - 12, buf, 32, &crossRw) && std::memcmp(buf, base + page - 12, 32) == 0 &&
+				  AllByte(buf + 32, 16, 0xCC) && crossRw.calls.size() == 2 && crossRw.calls[0].ok &&
+				  crossRw.calls[0].address == address(base + page - 12) && crossRw.calls[0].bytes == 12 &&
+				  crossRw.calls[1].ok && crossRw.calls[1].address == address(base + page) && crossRw.calls[1].bytes == 20,
+			"CopyExact 32 bytes across two readable pages succeeds in 2 calls");
+
+		// 256, 257 and 600 bytes (with embedded zeros): never exceeds kMaxChunk or crosses a page end.
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder rec256;
+		Check(CopyExact(base, buf, 256, &rec256) && std::memcmp(buf, base, 256) == 0 && AllByte(buf + 256, 16, 0xCC) &&
+				  rec256.calls.size() == 1 && rec256.calls[0].ok && rec256.calls[0].bytes == 256 &&
+				  staysInPage(rec256.calls[0]),
+			"CopyExact 256 bytes with embedded zeros takes one 256-byte call");
+
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder rec257;
+		Check(CopyExact(base, buf, 257, &rec257) && std::memcmp(buf, base, 257) == 0 && AllByte(buf + 257, 16, 0xCC) &&
+				  rec257.calls.size() == 2 && rec257.calls[0].ok && rec257.calls[0].bytes == 256 &&
+				  rec257.calls[1].ok && rec257.calls[1].address == address(base + 256) && rec257.calls[1].bytes == 1 &&
+				  staysInPage(rec257.calls[0]) && staysInPage(rec257.calls[1]),
+			"CopyExact 257 bytes with embedded zeros splits into 256 and 1");
+
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder rec600;
+		Check(CopyExact(base, buf, 600, &rec600) && std::memcmp(buf, base, 600) == 0 && AllByte(buf + 600, 16, 0xCC) &&
+				  rec600.calls.size() == 3 && rec600.calls[0].ok && rec600.calls[0].address == address(base) &&
+				  rec600.calls[0].bytes == 256 && rec600.calls[1].ok && rec600.calls[1].address == address(base + 256) &&
+				  rec600.calls[1].bytes == 256 && rec600.calls[2].ok && rec600.calls[2].address == address(base + 512) &&
+				  rec600.calls[2].bytes == 88 && staysInPage(rec600.calls[0]) && staysInPage(rec600.calls[1]) &&
+				  staysInPage(rec600.calls[2]),
+			"CopyExact 600 bytes with embedded zeros splits into 256, 256 and 88");
+
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder rec600Cross;
+		Check(CopyExact(base + page - 100, buf, 600, &rec600Cross) &&
+				  std::memcmp(buf, base + page - 100, 600) == 0 && AllByte(buf + 600, 16, 0xCC) &&
+				  rec600Cross.calls.size() == 3 && rec600Cross.calls[0].ok &&
+				  rec600Cross.calls[0].address == address(base + page - 100) && rec600Cross.calls[0].bytes == 100 &&
+				  rec600Cross.calls[1].ok && rec600Cross.calls[1].address == address(base + page) &&
+				  rec600Cross.calls[1].bytes == 256 && rec600Cross.calls[2].ok &&
+				  rec600Cross.calls[2].address == address(base + page + 256) && rec600Cross.calls[2].bytes == 244 &&
+				  staysInPage(rec600Cross.calls[0]) && staysInPage(rec600Cross.calls[1]) &&
+				  staysInPage(rec600Cross.calls[2]),
+			"CopyExact 600 bytes crossing a page end splits into 100, 256 and 244 within page limits");
+
+		// RW page 0 -> RO page 1 (separate regions).
+		Check(::VirtualProtect(base + page, page, PAGE_READONLY, &oldProtect) != 0,
+			"CopyExact page 1 changed to PAGE_READONLY");
+		MEMORY_BASIC_INFORMATION rwInfo{};
+		::VirtualQuery(base, &rwInfo, sizeof(rwInfo));
+		Check(rwInfo.RegionSize == page, "CopyExact RW and RO pages are separate regions");
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder crossRwRo;
+		Check(CopyExact(base + page - 12, buf, 32, &crossRwRo) && std::memcmp(buf, base + page - 12, 32) == 0 &&
+				  AllByte(buf + 32, 16, 0xCC) && crossRwRo.calls.size() == 2 && crossRwRo.calls[0].ok &&
+				  crossRwRo.calls[0].bytes == 12 && crossRwRo.calls[1].ok && crossRwRo.calls[1].bytes == 20,
+			"CopyExact 32 bytes from RW page to RO page succeeds in 2 calls");
+
+		// Execute-only page: on this PC (Windows 11 26300), ReadProcessMemory reads PAGE_EXECUTE
+		// pages, while hardware enforcing execute-only would refuse them. Either way it must not
+		// crash or raise an exception, and must make exactly one 8-byte call.
+		unsigned char execExpected[8];
+		std::memcpy(execExpected, base + page, sizeof(execExpected));
+		Check(::VirtualProtect(base + page, page, PAGE_EXECUTE, &oldProtect) != 0,
+			"CopyExact page 1 changed to PAGE_EXECUTE");
+		std::memset(buf, 0xCC, sizeof(buf));
+		Recorder   execRec;
+		const bool execOk = CopyExact(base + page, buf, 8, &execRec);
+		const bool execValid = execRec.calls.size() == 1 && execRec.calls[0].address == address(base + page) &&
+		                       execRec.calls[0].bytes == 8 && execRec.calls[0].ok == execOk &&
+		                       AllByte(buf + 8, 16, 0xCC) &&
+		                       (execOk ? std::memcmp(buf, execExpected, 8) == 0 : AllByte(buf, 8, 0xCC));
+		Check(execValid, execOk ? "CopyExact on PAGE_EXECUTE page makes one 8-byte call (read succeeded on this OS)"
+		                        : "CopyExact on PAGE_EXECUTE page makes one 8-byte call (refused on this OS)");
+
+		// Contract checks: check order (null a_ptr -> false, a_count 0 -> true, null a_out -> false), 0 calls.
+		std::memset(buf, 0xEE, 32);
+		Recorder contract;
+		Check(!CopyExact(nullptr, buf, 8, &contract) && contract.calls.empty() && AllByte(buf, 32, 0xEE),
+			"CopyExact(nullptr, out, 8) returns false with 0 calls");
+		Check(!CopyExact(nullptr, buf, 0, &contract) && contract.calls.empty() && AllByte(buf, 32, 0xEE),
+			"CopyExact(nullptr, out, 0) returns false with 0 calls");
+		Check(!CopyExact(nullptr, nullptr, 0, &contract) && contract.calls.empty(),
+			"CopyExact(nullptr, nullptr, 0) returns false with 0 calls");
+		Check(CopyExact(base, buf, 0, &contract) && contract.calls.empty() && AllByte(buf, 32, 0xEE),
+			"CopyExact(ptr, out, 0) returns true with 0 calls");
+		Check(CopyExact(base + page * 4, buf, 0, &contract) && contract.calls.empty() && AllByte(buf, 32, 0xEE),
+			"CopyExact(unreadable non-null, out, 0) returns true with 0 calls");
+		Check(CopyExact(base, nullptr, 0, &contract) && contract.calls.empty(),
+			"CopyExact(ptr, nullptr, 0) returns true with 0 calls");
+		Check(!CopyExact(base, nullptr, 8, &contract) && contract.calls.empty(),
+			"CopyExact(ptr, nullptr, 8) returns false with 0 calls");
+
+		::VirtualFree(base, 0, MEM_RELEASE);
 	}
 
 	void TestUnreadableAndNoExceptions()
@@ -776,6 +1071,9 @@ namespace
 		// Private read-only and read-write guard pages, a mapped guard page, and copies running into
 		// them from the page before: all under the same handler.
 		TestGuardPages();
+		// CopyExact success and failure cases (including cross-page unreadable/guard failures) under
+		// the same 0-exception handler.
+		TestCopyExact();
 
 		// Each read must really try the copy (one failed ReadProcessMemory at that address, of the
 		// default chunk cut at the page end), so a check that skipped the copy would not pass.
@@ -825,9 +1123,40 @@ namespace
 		checkUnreadable(pages + page * 2, "guard page under VEH gives unreadable/empty");
 		Check(HasGuardBit(pages + page * 2), "guard page keeps PAGE_GUARD under VEH");
 
+		// CopyExact on the seven unreadable addresses from 0.0.11 (including 0xFFFFFFFFFFFFFFF0) plus
+		// 0x46 (32 B) and the guard page (9 cases total): expected chunk size is min(a_count,
+		// kMaxChunk, page remaining), and the first call fails so the entire buffer stays untouched.
+		const auto checkUnreadableExact = [&](const void* a_ptr, std::size_t a_count, const char* a_label) {
+			const auto at = reinterpret_cast<std::uintptr_t>(a_ptr);
+			const auto expected = std::min<std::uintptr_t>(std::min<std::size_t>(a_count, kMaxChunk), page - (at % page));
+			unsigned char exactBuf[64];
+			std::memset(exactBuf, 0xCC, sizeof(exactBuf));
+			Recorder rec;
+			const bool ok = !CopyExact(a_ptr, exactBuf, a_count, &rec) && rec.calls.size() == 1 && !rec.calls[0].ok &&
+			                rec.calls[0].address == at && rec.calls[0].bytes == expected &&
+			                AllByte(exactBuf, sizeof(exactBuf), 0xCC);
+			Check(ok, a_label);
+		};
+		checkUnreadableExact(pages, 32, "CopyExact unreadable [1/9]: PAGE_NOACCESS returns false");
+		checkUnreadableExact(pages + page, 32, "CopyExact unreadable [2/9]: MEM_RESERVE returns false");
+		checkUnreadableExact(toFree, 32, "CopyExact unreadable [3/9]: freed MEM_FREE page returns false");
+		checkUnreadableExact(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x10)), 32,
+			"CopyExact unreadable [4/9]: low address 0x10 returns false");
+		checkUnreadableExact(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0xFFFF'8000'0000'0000ull)), 32,
+			"CopyExact unreadable [5/9]: kernel address 0xFFFF800000000000 returns false");
+		checkUnreadableExact(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x0000'9000'0000'0000ull)), 32,
+			"CopyExact unreadable [6/9]: above-user address 0x0000900000000000 returns false");
+		checkUnreadableExact(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0xFFFF'FFFF'FFFF'FFF0ull)), 32,
+			"CopyExact unreadable [7/9]: top address 0xFFFFFFFFFFFFFFF0 (32 B) clamps to 16 B and returns false");
+		checkUnreadableExact(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x46)), 32,
+			"CopyExact unreadable [8/9]: low unaligned address 0x46 (32 B) returns false");
+		checkUnreadableExact(pages + page * 2, 32, "CopyExact unreadable [9/9]: guard page returns false");
+		Check(HasGuardBit(pages + page * 2), "guard page keeps PAGE_GUARD after CopyExact under VEH");
+
 		const LONG readExceptions = ::InterlockedExchange(&g_vehExceptions, 0);
 		Check(::RemoveVectoredExceptionHandler(veh) != 0, "vectored exception handler removed");
-		Check(readExceptions == 0, "guard-page reads and all seven unreadable addresses raised 0 exceptions");
+		Check(readExceptions == 0,
+			"TestGuardPages, TestCopyExact, guard-page reads and all unreadable addresses (including 9 CopyExact cases) raised 0 exceptions");
 
 		::VirtualFree(pages, 0, MEM_RELEASE);
 	}
@@ -970,11 +1299,10 @@ int main()
 	TestCleanText();
 	TestKeyText();
 	TestClassify();
-	TestProtection();
 	TestCopy();
 	TestObserver();
 	TestThreadStackGuard();
-	TestUnreadableAndNoExceptions();  // runs TestGuardPages inside its exception-counting window
+	TestUnreadableAndNoExceptions();  // runs TestGuardPages and TestCopyExact inside its exception-counting window
 	TestPageAndChunkBoundaries();
 	std::printf("%s (%d passed, %d failed)\n", g_failed == 0 ? "all passed" : "FAILED", g_passed, g_failed);
 	return g_failed == 0 ? 0 : 1;

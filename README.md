@@ -27,7 +27,7 @@
 
 1. `git submodule update --init`으로 CommonLibSSE-NG를 받습니다.
 2. Visual Studio 2022와 vcpkg(`VCPKG_ROOT`)가 필요합니다.
-3. `build-probe.bat`을 실행하면 문자열 처리 시험(`probe/tests/TextTest.cpp`)을 먼저 돌리고, 모두 통과하면 MO2 설치용 zip을 만듭니다. 빌드 폴더와 zip 위치는 `CMakePresets.json`의 `TN_BUILD_ROOT`와 `binaryDir`에 적힌 경로이니, 자기 환경에 맞게 바꿉니다.
+3. `build-probe.bat`을 실행하면 문자열·메모리 복사 시험(`probe/tests/TextTest.cpp`)을 먼저 돌리고, 모두 통과하면 MO2 설치용 zip을 만듭니다. 빌드 폴더와 zip 위치는 `CMakePresets.json`의 `TN_BUILD_ROOT`와 `binaryDir`에 적힌 경로이니, 자기 환경에 맞게 바꿉니다.
 
 ## English (short)
 

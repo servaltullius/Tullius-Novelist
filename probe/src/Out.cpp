@@ -357,22 +357,26 @@ namespace probe
 				.emit();
 		}
 
-		void Add(const char* a_name, double a_us)
+		void Add(const char* a_name, double a_us) noexcept
 		{
-			std::scoped_lock lock(g_perfLock);
-			auto& s = g_stats[a_name];
-			++s.count;
-			s.totalUs += a_us;
-			if (a_us > s.maxUs) {
-				s.maxUs = a_us;
-			}
-			// A ring: once full, each timing replaces the oldest. A name timed more than
-			// kMaxSamples times between dumps gets percentiles of its latest timings only, while
-			// count, avgUs and maxUs cover all of them.
-			if (s.samples.size() < kMaxSamples) {
-				s.samples.push_back(static_cast<float>(a_us));
-			} else {
-				s.samples[(s.count - 1) % kMaxSamples] = static_cast<float>(a_us);
+			try {
+				std::scoped_lock lock(g_perfLock);
+				auto& s = g_stats[a_name];
+				// A ring: once full, each timing replaces the oldest. A name timed more than
+				// kMaxSamples times between dumps gets percentiles of its latest timings only, while
+				// count, avgUs and maxUs cover all of them.
+				if (s.samples.size() < kMaxSamples) {
+					s.samples.push_back(static_cast<float>(a_us));
+				} else {
+					s.samples[s.count % kMaxSamples] = static_cast<float>(a_us);
+				}
+				++s.count;
+				s.totalUs += a_us;
+				if (a_us > s.maxUs) {
+					s.maxUs = a_us;
+				}
+			} catch (...) {
+				// Drop the sample rather than throwing from a hook or Scope destructor.
 			}
 		}
 

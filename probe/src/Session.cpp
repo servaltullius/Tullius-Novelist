@@ -21,6 +21,7 @@ namespace probe::session
 			g_started.store(true);
 			Line("session.start").str("by", a_by).emit();
 			damage::InstallOnce();
+			forms::RunSelfTestOnce();
 			events::AttachPlayerGraph();
 			events::ResetEnemyGraphs();
 			damage::ResetDotSources();

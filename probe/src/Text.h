@@ -5,8 +5,8 @@
 #include <string>
 #include <string_view>
 
-// Text handling that does not depend on the game, so it can be tested on its own
-// (probe/tests/TextTest.cpp).
+// Text handling and safe memory copying that do not depend on the game, so they can be tested on
+// their own (probe/tests/TextTest.cpp).
 namespace probe::text
 {
 	// Length of the well-formed UTF-8 sequence that starts at a_text[a_pos] (1 to 4), or 0 if
@@ -41,13 +41,7 @@ namespace probe::text
 	// Up to a_max bytes as hex pairs separated by spaces, for showing bytes that are not text.
 	std::string HexBytes(std::string_view a_bytes, std::size_t a_max);
 
-	// True if pages with this protection (MEMORY_BASIC_INFORMATION::Protect) can be read directly
-	// after a VirtualQuery check (used by probe::forms). CopyCString and CopyBytes do not call
-	// this: they copy through ReadProcessMemory without querying first, which on this Windows
-	// build can also read PAGE_EXECUTE pages.
-	bool IsReadableProtection(unsigned long a_protect) noexcept;
-
-	// Each ReadProcessMemory call behind CopyCString and CopyBytes, reported to an observer.
+	// Each ReadProcessMemory call behind CopyCString, CopyBytes and CopyExact, reported to an observer.
 	struct CallInfo
 	{
 		bool           ok;       // every byte of the chunk copied
@@ -92,6 +86,14 @@ namespace probe::text
 	// Copies up to a_count bytes from a_ptr the same way, stopping at the first byte that cannot
 	// be read (zeros included, unlike CopyCString). For showing what is really at an address.
 	std::string CopyBytes(const void* a_ptr, std::size_t a_count, CallObserver* a_observer = nullptr);
+
+	// Copies exactly a_count bytes from a_ptr into a_out through the same reader as CopyBytes:
+	// ReadProcessMemory, at most kMaxChunk bytes per call and never across a page end, no
+	// VirtualQuery, no std::string. Checked in this order: a null a_ptr gives false; a_count 0 gives
+	// true; a null a_out gives false. Nothing is read in those cases. Otherwise true only if every
+	// byte was copied; on false, a_out holds the bytes copied before the failure and nothing past
+	// a_count is written. a_observer, if given, is told about every ReadProcessMemory call.
+	bool CopyExact(const void* a_ptr, void* a_out, std::size_t a_count, CallObserver* a_observer = nullptr);
 
 	// The text without a UTF-8 sequence cut off at its end (a valid lead byte followed by fewer
 	// continuation bytes than it needs, those in range), for text cut at a length limit. Bytes

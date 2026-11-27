@@ -288,16 +288,6 @@ namespace probe::text
 		return result;
 	}
 
-	bool IsReadableProtection(unsigned long a_protect) noexcept
-	{
-		if ((a_protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-			return false;
-		}
-		constexpr unsigned long readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-		                                   PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-		return (a_protect & readable) != 0;
-	}
-
 	Read CopyCString(const char* a_ptr, std::size_t a_max, std::string& a_out, CallObserver* a_observer, std::size_t a_chunk)
 	{
 		a_out.clear();
@@ -339,6 +329,30 @@ namespace probe::text
 			result.append(buffer, copied);
 		}
 		return result;
+	}
+
+	bool CopyExact(const void* a_ptr, void* a_out, std::size_t a_count, CallObserver* a_observer)
+	{
+		if (!a_ptr) {
+			return false;
+		}
+		if (a_count == 0) {
+			return true;
+		}
+		if (!a_out) {
+			return false;
+		}
+		SafeReader  reader(reinterpret_cast<std::uintptr_t>(a_ptr), a_observer);
+		auto*       dest = static_cast<char*>(a_out);
+		std::size_t done = 0;
+		while (done < a_count) {
+			const auto copied = reader.Next(dest + done, std::min(a_count - done, kMaxChunk));
+			if (copied == 0) {
+				return false;
+			}
+			done += copied;
+		}
+		return true;
 	}
 
 	const char* Classify(Read a_read, std::string_view a_text, bool a_emptyIsBad) noexcept

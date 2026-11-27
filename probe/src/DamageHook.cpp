@@ -52,11 +52,26 @@ namespace probe::damage
 			return ref;
 		}
 
-		// Some callers pass stale or garbage actor pointers (CalamityAffixes logs and drops them).
-		// An actor is accepted only if it is readable and its vtable lies inside the game executable.
-		RE::Actor* Sanitize(RE::Actor* a_actor)
+		struct Sanitized
 		{
-			return forms::IsGameObject(a_actor) ? a_actor : nullptr;
+			RE::Actor*         actor{ nullptr };
+			forms::ObjectCheck check{ forms::ObjectCheck::null };
+		};
+
+		// Some callers pass stale or garbage actor pointers (CalamityAffixes logs and drops them).
+		// The current player singleton is accepted by address without copying; any other non-null
+		// actor is accepted only if it passes forms::CheckGameObject (aligned, readable via
+		// ReadProcessMemory, game .rdata vtable).
+		Sanitized Sanitize(RE::Actor* a_actor, const void* a_player, text::CallObserver* a_observer)
+		{
+			if (!a_actor) {
+				return { nullptr, forms::ObjectCheck::null };
+			}
+			if (a_player && a_actor == a_player) {
+				return { a_actor, forms::ObjectCheck::ok };
+			}
+			const auto check = forms::CheckGameObject(a_actor, a_observer);
+			return { check == forms::ObjectCheck::ok ? a_actor : nullptr, check };
 		}
 
 		// Attacker-less damage below this size arrives every frame (B run: 6,677 of 7,545 calls).
@@ -142,7 +157,8 @@ namespace probe::damage
 		{
 			// The probe only observes: the original arguments always go down the chain unchanged.
 			// Cheap address-only relevance check first, so the per-call cost for NPC-vs-NPC damage
-			// stays at a few comparisons; pointers are validated only when we are going to read them.
+			// stays at a few comparisons; pointers are validated only when we are going to read them,
+			// and the current player singleton is accepted by address without copying.
 			const void* player = RE::PlayerCharacter::GetSingleton();
 			const bool  maybeRelevant = (player && (a_this == player || a_attacker == player)) ||
 			                           forms::IsKnownTeammatePtr(a_this) || forms::IsKnownTeammatePtr(a_attacker);
@@ -153,59 +169,79 @@ namespace probe::damage
 				return;
 			}
 
-			RE::Actor* target = nullptr;
-			RE::Actor* attacker = nullptr;
+			Sanitized target;
+			Sanitized attacker;
 			{
-				perf::Scope scope("damage.filter");
-				target = Sanitize(a_this);
-				attacker = Sanitize(a_attacker);
+				forms::CopyTiming timing("form.copy.damage");
+				perf::Scope       scope("damage.filter");
+				target = Sanitize(a_this, player, &timing);
+				attacker = Sanitize(a_attacker, player, &timing);
 			}
-			if (!target) {
-				const auto caller = ModuleOf(a_caller);
-				Line("damage.badTarget").str("vtbl", a_label).hex("target", reinterpret_cast<std::uintptr_t>(a_this))
-					.str("callerModule", caller.name).hex("callerOffset", caller.offset).emit();
+			// Probe work is guarded so an exception cannot skip a_original or escape into game code.
+			if (!target.actor) {
+				try {
+					const auto caller = ModuleOf(a_caller);
+					Line("damage.badTarget")
+						.str("vtbl", a_label)
+						.hex("target", reinterpret_cast<std::uintptr_t>(a_this))
+						.str("reason", forms::ObjectCheckName(target.check))
+						.str("callerModule", caller.name)
+						.hex("callerOffset", caller.offset)
+						.emit();
+				} catch (...) {
+				}
 				if (a_original) {
 					a_original(a_this, a_attacker, a_damage);
 				}
 				return;
 			}
 
-			float before = 0.0f;
-			float maxHp = 0.0f;
-			{
+			// NaN until read, so an exception in damage.pre shows as null in the line, not as 0 HP.
+			float before = std::numeric_limits<float>::quiet_NaN();
+			float maxHp = std::numeric_limits<float>::quiet_NaN();
+			try {
 				perf::Scope scope("damage.pre");
-				before = Health(target);
-				maxHp = MaxHealth(target);
+				before = Health(target.actor);
+				maxHp = MaxHealth(target.actor);
+			} catch (...) {
 			}
 			if (a_original) {
 				a_original(a_this, a_attacker, a_damage);
 			}
-			perf::Scope scope("damage.post");
-			if (!attacker && a_damage < 0.0f && a_damage > -kDotThreshold) {
-				NoteDot(target->GetFormID(), a_damage);
+			try {
+				perf::Scope scope("damage.post");
+				if (!attacker.actor && a_damage < 0.0f && a_damage > -kDotThreshold) {
+					NoteDot(target.actor->GetFormID(), a_damage);
+				}
+				const float after = Health(target.actor);
+				const auto  caller = ModuleOf(a_caller);
+				// If another plugin hooked the slot after us, its DLL is what we see as the caller.
+				// Report whether our thunk is still the one in the target's vtable slot.
+				const auto* vtbl = *reinterpret_cast<const std::uintptr_t* const*>(target.actor);
+				const bool  outermost = vtbl && (vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkActor) ||
+				                                    vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkCharacter) ||
+				                                    vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkPlayer));
+				const bool  attackerSanitized = a_attacker != nullptr && attacker.actor == nullptr;
+				Line        line("damage");
+				line.str("vtbl", a_label)
+					.str("callerModule", caller.name)
+					.hex("callerOffset", caller.offset)
+					.flag("probeOutermost", outermost)
+					.raw("target", forms::Json(target.actor))
+					.raw("attacker", forms::Json(attacker.actor))
+					.flag("attackerSanitized", attackerSanitized);
+				if (attackerSanitized) {
+					line.hex("attackerRaw", reinterpret_cast<std::uintptr_t>(a_attacker))
+						.str("attackerReason", forms::ObjectCheckName(attacker.check));
+				}
+				line.num("reported", static_cast<double>(a_damage))
+					.num("hpBefore", static_cast<double>(before))
+					.num("hpAfter", static_cast<double>(after))
+					.num("hpMax", static_cast<double>(maxHp))
+					.flag("targetKillMove", target.actor->IsInKillMove())
+					.emit();
+			} catch (...) {
 			}
-			const float after = Health(target);
-			const auto  caller = ModuleOf(a_caller);
-			// If another plugin hooked the slot after us, its DLL is what we see as the caller.
-			// Report whether our thunk is still the one in the target's vtable slot.
-			const auto* vtbl = *reinterpret_cast<const std::uintptr_t* const*>(target);
-			const bool  outermost = vtbl && (vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkActor) ||
-			                                    vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkCharacter) ||
-			                                    vtbl[kSlot] == reinterpret_cast<std::uintptr_t>(&ThunkPlayer));
-			Line("damage")
-				.str("vtbl", a_label)
-				.str("callerModule", caller.name)
-				.hex("callerOffset", caller.offset)
-				.flag("probeOutermost", outermost)
-				.raw("target", forms::Json(target))
-				.raw("attacker", forms::Json(attacker))
-				.flag("attackerSanitized", a_attacker != nullptr && attacker == nullptr)
-				.num("reported", static_cast<double>(a_damage))
-				.num("hpBefore", static_cast<double>(before))
-				.num("hpAfter", static_cast<double>(after))
-				.num("hpMax", static_cast<double>(maxHp))
-				.flag("targetKillMove", target->IsInKillMove())
-				.emit();
 		}
 
 		// noinline keeps _ReturnAddress() pointing at the caller of the vtable slot.

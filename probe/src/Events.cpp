@@ -246,7 +246,8 @@ namespace probe::events
 
 		Checked Check(const void* a_ptr, RE::FormType a_type)
 		{
-			const auto* live = forms::VerifiedForm(a_ptr);
+			forms::CopyTiming timing("form.copy.event");
+			const auto*       live = forms::VerifiedForm(a_ptr, &timing);
 			return { a_ptr, live, live && live->Is(a_type) ? live : nullptr };
 		}
 
