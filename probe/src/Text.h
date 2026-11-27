@@ -41,40 +41,25 @@ namespace probe::text
 	// Up to a_max bytes as hex pairs separated by spaces, for showing bytes that are not text.
 	std::string HexBytes(std::string_view a_bytes, std::size_t a_max);
 
-	// True if pages with this protection (MEMORY_BASIC_INFORMATION::Protect) can be read.
+	// True if pages with this protection (MEMORY_BASIC_INFORMATION::Protect) can be read directly
+	// after a VirtualQuery check (used by probe::forms). CopyCString and CopyBytes do not call
+	// this: they copy through ReadProcessMemory without querying first, which on this Windows
+	// build can also read PAGE_EXECUTE pages.
 	bool IsReadableProtection(unsigned long a_protect) noexcept;
 
-	// The two system calls behind CopyCString and CopyBytes, reported one by one to an observer
-	// so a measurement can tell what each costs and which memory the strings sit in.
-	enum class Call
-	{
-		query,  // VirtualQuery at the read address
-		copy,   // ReadProcessMemory of one chunk
-	};
-
+	// Each ReadProcessMemory call behind CopyCString and CopyBytes, reported to an observer.
 	struct CallInfo
 	{
-		Call           call;
-		bool           ok;       // query: committed and readable; copy: every byte of the chunk copied
-		double         us;       // time spent in the system call alone
-		std::uintptr_t address;  // where the call looked
-		std::size_t    bytes;    // copy: the chunk asked for; 0 for a query
-		// What VirtualQuery reported (MEMORY_BASIC_INFORMATION); all 0 for a copy, and for a
-		// query that got no answer at all. Windows leaves allocationBase, protect and type
-		// undefined when state is MEM_FREE, and protect undefined when it is MEM_RESERVE; they
-		// are passed on as they came.
-		std::uintptr_t allocationBase;
-		std::uintptr_t regionBase;  // the page holding address, not where the allocation starts
-		std::size_t    regionSize;  // from regionBase to the end of the run of pages alike
-		unsigned long  state;
-		unsigned long  protect;
-		unsigned long  type;
+		bool           ok;       // every byte of the chunk copied
+		double         us;       // time spent in ReadProcessMemory alone
+		std::uintptr_t address;  // where the copy started
+		std::size_t    bytes;    // chunk size asked for
 	};
 
 	class CallObserver
 	{
 	public:
-		// Called right after each call, on the reading thread, before the read goes on.
+		// Called right after each ReadProcessMemory call, on the reading thread, before the read goes on.
 		virtual void OnCall(const CallInfo& a_call) = 0;
 
 	protected:
@@ -90,15 +75,17 @@ namespace probe::text
 	};
 
 	// Copies a zero-terminated string from an address that may not hold one: a string the game
-	// has already released, or one that never ends. Reads at most a_max bytes, only from memory
-	// that VirtualQuery reports committed and readable, and copies through ReadProcessMemory: if
-	// the memory goes away between the check and the copy, the copy fails instead of faulting.
-	// a_out holds the bytes copied (without the zero), also when the result is not ok. With
+	// has already released, or one that never ends. Reads at most a_max bytes through
+	// ReadProcessMemory without VirtualQuery; on Windows 11 (26300, re-checked at every build by
+	// probe_text_test), unreadable and guard pages fail without clearing PAGE_GUARD and without
+	// raising a user-mode exception. Because VirtualQuery is not used, PAGE_EXECUTE pages can be
+	// read on this Windows build and may be returned as text if their bytes happen to look like
+	// text. a_out holds the bytes copied (without the zero), also when the result is not ok. With
 	// a_max 0 nothing is read and the result is unreadable for a null address, else tooLong.
-	// a_observer, if given, is told about every VirtualQuery and ReadProcessMemory call.
+	// a_observer, if given, is told about every ReadProcessMemory call.
 	// a_chunk: the most bytes one ReadProcessMemory call asks for; 0, or anything above
-	// kMaxChunk, means kMaxChunk. A copy also never crosses a page or region end.
-	inline constexpr std::size_t kMaxChunk = 512;
+	// kMaxChunk, means kMaxChunk. A copy also never crosses a page end.
+	inline constexpr std::size_t kMaxChunk = 256;
 	Read CopyCString(const char* a_ptr, std::size_t a_max, std::string& a_out, CallObserver* a_observer = nullptr,
 		std::size_t a_chunk = kMaxChunk);
 

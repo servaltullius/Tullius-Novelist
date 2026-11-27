@@ -42,9 +42,11 @@ namespace probe::text
 		}
 
 		// Reads forward from an address that may not be readable. Each copy stays inside one page
-		// and inside the region VirtualQuery last reported committed and readable, and goes
-		// through ReadProcessMemory, which fails instead of faulting if the memory has gone since.
-		// With an observer, each of those calls is timed and reported; without one nothing is timed.
+		// (a cross-page ReadProcessMemory fails as a whole if the second page is unreadable) and
+		// goes directly through ReadProcessMemory without VirtualQuery. On Windows 11 (26300,
+		// re-checked at every build by probe_text_test), unreadable and guard pages fail without
+		// clearing PAGE_GUARD and without raising a user-mode exception. With an observer, each
+		// call is timed and reported; without one nothing is timed.
 		class SafeReader
 		{
 		public:
@@ -56,40 +58,16 @@ namespace probe::text
 			// at the current address cannot be read.
 			std::size_t Next(char* a_buffer, std::size_t a_want)
 			{
-				if (_address >= _regionEnd) {
-					MEMORY_BASIC_INFORMATION info{};
-					const auto start = _observer ? Ticks() : 0;
-					const bool answered = ::VirtualQuery(reinterpret_cast<const void*>(_address), &info, sizeof(info)) == sizeof(info);
-					const auto end = _observer ? Ticks() : 0;
-					const bool ok = answered && info.State == MEM_COMMIT && IsReadableProtection(info.Protect);
-					if (_observer) {
-						CallInfo call{ Call::query, ok, TicksToUs(end - start), _address, 0, 0, 0, 0, 0, 0, 0 };
-						if (answered) {
-							call.allocationBase = reinterpret_cast<std::uintptr_t>(info.AllocationBase);
-							call.regionBase = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
-							call.regionSize = info.RegionSize;
-							call.state = info.State;
-							call.protect = info.Protect;
-							call.type = info.Type;
-						}
-						_observer->OnCall(call);
-					}
-					if (!ok) {
-						return 0;
-					}
-					_regionEnd = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
-				}
 				const auto page = PageSize();
-				const auto pageEnd = (_address / page + 1) * page;
-				const auto chunk = static_cast<std::size_t>(
-					std::min<std::uintptr_t>({ a_want, pageEnd - _address, _regionEnd - _address }));
+				const auto pageLeft = page - (_address % page);
+				const auto chunk = static_cast<std::size_t>(std::min<std::uintptr_t>(a_want, pageLeft));
 				SIZE_T     copied = 0;
 				const auto start = _observer ? Ticks() : 0;
 				const bool read = ::ReadProcessMemory(::GetCurrentProcess(), reinterpret_cast<const void*>(_address), a_buffer, chunk, &copied) != FALSE;
 				const auto end = _observer ? Ticks() : 0;
 				const bool ok = read && copied == chunk;
 				if (_observer) {
-					_observer->OnCall({ Call::copy, ok, TicksToUs(end - start), _address, chunk, 0, 0, 0, 0, 0, 0 });
+					_observer->OnCall({ ok, TicksToUs(end - start), _address, chunk });
 				}
 				if (!ok) {
 					return 0;
@@ -100,7 +78,6 @@ namespace probe::text
 
 		private:
 			std::uintptr_t _address;
-			std::uintptr_t _regionEnd{ 0 };
 			CallObserver*  _observer;
 		};
 

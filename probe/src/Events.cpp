@@ -4,9 +4,6 @@
 #include "Text.h"
 #include "World.h"
 
-#include <set>
-#include <tuple>
-
 namespace probe::events
 {
 	namespace
@@ -283,23 +280,8 @@ namespace probe::events
 		// which looks like a string read (also not confirmed). Such text is copied only from
 		// readable memory and up to a limit (text::CopyCString), never read in place.
 
-		// (0.0.10, measurement) The safe copy made the menu and mod event sinks about four times
-		// slower in 0.0.9 (menu 21 us against 4.9 us in the same first 210 s of a run). This build
-		// records what the parts of a read cost, as "perf" names:
-		// - for each place a string is read from ("<site>"): the whole read of a non-null address,
-		//   by the copy size it used ("text.read.<site>.512" / ".256", one sample per string);
-		//   each VirtualQuery ("text.query.<site>") and each ReadProcessMemory ("text.copy.<site>"),
-		//   one sample per call;
-		// - over all sites, by what might drive the cost: each VirtualQuery that found readable
-		//   memory, by the size it reported from the read address's page to the region end
-		//   ("text.queryRegion.<size>"), and each ReadProcessMemory by the bytes it asked for
-		//   ("text.copyBytes.upTo511" / ".from512", copies that succeeded; older Windows kernels are
-		//   said to copy more than 511 bytes by a slower path, not confirmed);
-		// - what the measuring itself takes in each call ("text.observer.query" / ".copy").
-		// Each read picks 512 or 256 bytes per copy at random (a hash of a per-launch seed, the site
-		// and a per-site counter), so both sizes are measured on the same strings in the same run.
-		// Taking turns would not do: menus open and close in the same order at every load, so a
-		// given menu got the same size every time (seen by replaying the 0.0.9 records).
+		// Per-site timing for non-null event string reads: the whole read (text.read.<site>) and
+		// each ReadProcessMemory call inside it (text.copy.<site>).
 		enum class Site : std::uint8_t
 		{
 			menu,
@@ -313,209 +295,37 @@ namespace probe::events
 
 		struct SiteNames
 		{
-			const char* site;
-			const char* read512;
-			const char* read256;
-			const char* query;
+			const char* read;
 			const char* copy;
 		};
 
 		// In the order of Site.
 		constexpr std::array<SiteNames, kSiteCount> kSiteNames{ {
-			{ "menu", "text.read.menu.512", "text.read.menu.256", "text.query.menu", "text.copy.menu" },
-			{ "modName", "text.read.modName.512", "text.read.modName.256", "text.query.modName", "text.copy.modName" },
-			{ "modStr", "text.read.modStr.512", "text.read.modStr.256", "text.query.modStr", "text.copy.modStr" },
-			{ "stat", "text.read.stat.512", "text.read.stat.256", "text.query.stat", "text.copy.stat" },
-			{ "objective", "text.read.objective.512", "text.read.objective.256", "text.query.objective", "text.copy.objective" },
-			{ "worldspace", "text.read.worldspace.512", "text.read.worldspace.256", "text.query.worldspace", "text.copy.worldspace" },
+			{ "text.read.menu", "text.copy.menu" },
+			{ "text.read.modName", "text.copy.modName" },
+			{ "text.read.modStr", "text.copy.modStr" },
+			{ "text.read.stat", "text.copy.stat" },
+			{ "text.read.objective", "text.copy.objective" },
+			{ "text.read.worldspace", "text.copy.worldspace" },
 		} };
 
 		const SiteNames& NamesOf(Site a_site) { return kSiteNames[static_cast<std::size_t>(a_site)]; }
-
-		const char* QueryRegionName(std::size_t a_regionSize)
-		{
-			constexpr std::size_t kKiB = 1024;
-			constexpr std::size_t kMiB = kKiB * 1024;
-			if (a_regionSize <= 64 * kKiB) {
-				return "text.queryRegion.upTo64K";
-			}
-			if (a_regionSize <= kMiB) {
-				return "text.queryRegion.upTo1M";
-			}
-			if (a_regionSize <= 16 * kMiB) {
-				return "text.queryRegion.upTo16M";
-			}
-			if (a_regionSize <= 64 * kMiB) {
-				return "text.queryRegion.upTo64M";
-			}
-			if (a_regionSize <= 256 * kMiB) {
-				return "text.queryRegion.upTo256M";
-			}
-			if (a_regionSize <= 1024 * kMiB) {
-				return "text.queryRegion.upTo1G";
-			}
-			return "text.queryRegion.over1G";
-		}
-
-		constexpr std::size_t                              kSmallChunk = 256;
-		std::array<std::atomic<std::uint64_t>, kSiteCount> g_textReads{};
-
-		// splitmix64's output step: consecutive inputs give unrelated bits.
-		constexpr std::uint64_t Mix(std::uint64_t a_value)
-		{
-			a_value += 0x9E37'79B9'7F4A'7C15ull;
-			a_value = (a_value ^ (a_value >> 30)) * 0xBF58'476D'1CE4'E5B9ull;
-			a_value = (a_value ^ (a_value >> 27)) * 0x94D0'49BB'1331'11EBull;
-			return a_value ^ (a_value >> 31);
-		}
-
-		// Chosen once per launch (when the DLL loads, before any event), so a string read at the
-		// same place in every run, such as the first menu, does not get the same copy size in
-		// every run. Written in the "text.chunk" line.
-		const std::uint64_t g_chunkSeed = Mix(static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
-											  (static_cast<std::uint64_t>(::GetCurrentProcessId()) << 32));
-
-		// Picks the copy size for one read: a site's reads are numbered, and each number, the site
-		// and the seed are hashed together, so sizes do not follow the order in which strings come.
-		std::size_t NextChunk(Site a_site)
-		{
-			const auto site = static_cast<std::size_t>(a_site);
-			const auto n = g_textReads[site].fetch_add(1, std::memory_order_relaxed);
-			return (Mix(g_chunkSeed + n * kSiteCount + site) & 1) == 0 ? text::kMaxChunk : kSmallChunk;
-		}
-
-		// Which memory the strings sit in: one "text.region" line the first time a site reads from
-		// a region, with what VirtualQuery reported. A region here is the allocation
-		// (AllocationBase), where the run of pages VirtualQuery reported ends, its state, and its
-		// protection when committed. Windows leaves AllocationBase, Protect and Type undefined for
-		// memory that is not allocated (MEM_FREE) and Protect undefined for reserved memory, so
-		// those are left out of the key (the line still shows what came back). A run of pages
-		// that grows gets a new end, so the count of regions can be higher than the count of
-		// allocations. If each site uses only a few regions, a later version could remember
-		// checked regions instead of asking VirtualQuery for every string.
-		// Each site writes at most kMaxRegionLinesPerSite lines; regions it meets after that are
-		// counted per site since the start ("textRegionsSkipped" in "counts"). Each site remembers
-		// at most kMaxRegionKeysPerSite regions; after that it writes and counts no new ones, and
-		// "textRegionsFull" in "counts" says so for that site.
-		// The line is written after the read that met the region, once that read's timing has
-		// ended: writing it is not part of "text.read.*" or "text.observer.*", but it is part of
-		// the sink's time ("menu" etc.), and is timed on its own as "text.regionLines".
-		constexpr std::size_t kMaxRegionLinesPerSite = 50;
-		constexpr std::size_t kMaxRegionKeysPerSite = 1024;
-		using RegionKey = std::tuple<Site, std::uintptr_t, std::uintptr_t, unsigned long, unsigned long>;
-
-		std::mutex                            g_regionLock;
-		std::set<RegionKey>                   g_regionsSeen;       // guarded by g_regionLock
-		std::array<std::size_t, kSiteCount>   g_regionKeys{};      // guarded by g_regionLock
-		std::array<std::uint64_t, kSiteCount> g_regionLines{};     // guarded by g_regionLock
-		std::array<std::uint64_t, kSiteCount> g_regionsSkipped{};  // guarded by g_regionLock
-		std::array<bool, kSiteCount>          g_regionsFull{};     // guarded by g_regionLock
-
-		// Records a query's region for its site. True if this is a region the site has not met and
-		// it may still write a line for it.
-		bool NoteRegion(Site a_site, const text::CallInfo& a_call)
-		{
-			const auto      index = static_cast<std::size_t>(a_site);
-			const auto      regionEnd = a_call.regionBase + a_call.regionSize;
-			const bool      unallocated = a_call.state == MEM_FREE;
-			const RegionKey key{ a_site, unallocated ? 0 : a_call.allocationBase, regionEnd, a_call.state,
-				a_call.state == MEM_COMMIT ? a_call.protect : 0 };
-			std::scoped_lock lock(g_regionLock);
-			if (g_regionsSeen.contains(key)) {
-				return false;
-			}
-			if (g_regionKeys[index] >= kMaxRegionKeysPerSite) {
-				g_regionsFull[index] = true;
-				return false;
-			}
-			g_regionsSeen.insert(key);
-			++g_regionKeys[index];
-			if (g_regionLines[index] >= kMaxRegionLinesPerSite) {
-				++g_regionsSkipped[index];
-				return false;
-			}
-			++g_regionLines[index];
-			return true;
-		}
-
-		void WriteRegionLine(Site a_site, const text::CallInfo& a_call)
-		{
-			Line("text.region").str("site", NamesOf(a_site).site).flag("ok", a_call.ok).num("us", a_call.us)
-				.hex("address", a_call.address).hex("allocationBase", a_call.allocationBase).hex("regionBase", a_call.regionBase)
-				.hex("regionEnd", a_call.regionBase + a_call.regionSize).num("regionSize", static_cast<std::uint64_t>(a_call.regionSize))
-				.hex("state", a_call.state).hex("protect", a_call.protect).hex("type", a_call.type).emit();
-		}
-
-		// "textRegionsSkipped" and "textRegionsFull" for the counts line, each an object by site.
-		std::pair<std::string, std::string> RegionCountsJson()
-		{
-			std::scoped_lock lock(g_regionLock);
-			std::string      skipped = "{";
-			std::string      full = "{";
-			for (std::size_t i = 0; i < kSiteCount; ++i) {
-				skipped += std::format("{}\"{}\":{}", i ? "," : "", kSiteNames[i].site, g_regionsSkipped[i]);
-				full += std::format("{}\"{}\":{}", i ? "," : "", kSiteNames[i].site, g_regionsFull[i] ? "true" : "false");
-			}
-			return { skipped + "}", full + "}" };
-		}
 
 		class SiteTiming final : public text::CallObserver
 		{
 		public:
 			explicit SiteTiming(Site a_site) :
-				_site(a_site)
+				_copyName(NamesOf(a_site).copy)
 			{}
 
-			// The time spent here goes to "text.observer.query" or "text.observer.copy", on the
-			// same clock as the calls. It leaves out that Add itself, which costs about as much as
-			// one of the Adds here.
+			// Records each ReadProcessMemory duration under the site's copy timing bucket.
 			void OnCall(const text::CallInfo& a_call) override
 			{
-				const auto& names = NamesOf(_site);
-				if (a_call.call == text::Call::query) {
-					perf::Scope scope("text.observer.query");
-					perf::Add(names.query, a_call.us);
-					if (a_call.ok) {
-						perf::Add(QueryRegionName(a_call.regionSize), a_call.us);
-					}
-					if (NoteRegion(_site, a_call)) {
-						if (_newRegionCount < _newRegions.size()) {
-							_newRegions[_newRegionCount++] = a_call;
-						} else {
-							WriteRegionLine(_site, a_call);  // not expected (see kMaxNewRegions); written now rather than lost
-						}
-					}
-				} else {
-					perf::Scope scope("text.observer.copy");
-					perf::Add(names.copy, a_call.us);
-					if (a_call.ok) {
-						perf::Add(a_call.bytes <= 511 ? "text.copyBytes.upTo511" : "text.copyBytes.from512", a_call.us);
-					}
-				}
-			}
-
-			// The "text.region" lines for the regions this read met first. Call after the read's
-			// timing has ended and before the record's Line is made.
-			void WriteRegionLines() const
-			{
-				if (_newRegionCount == 0) {
-					return;
-				}
-				perf::Scope scope("text.regionLines");
-				for (std::size_t i = 0; i < _newRegionCount; ++i) {
-					WriteRegionLine(_site, _newRegions[i]);
-				}
+				perf::Add(_copyName, a_call.us);
 			}
 
 		private:
-			// A read queries at most once per page, and stops at the first page it cannot read:
-			// the text (at most 4097 bytes) spans at most two 4 KiB pages, and the 16 bytes shown
-			// when it is bad at most two more. Kept in place, so noting a region allocates nothing.
-			static constexpr std::size_t kMaxNewRegions = 4;
-
-			Site                                       _site;
-			std::array<text::CallInfo, kMaxNewRegions> _newRegions{};
-			std::size_t                                _newRegionCount{ 0 };
+			const char* _copyName;
 		};
 
 		struct EventText
@@ -544,9 +354,8 @@ namespace probe::events
 		// 11-23 and 11-24, at regular places such as right after "Mist Menu" opened, and did not
 		// tell a null name from an empty one). Mod event strings are often empty on purpose, so
 		// for them it is not.
-		// Read the text before making the record's Line: a first read from a new region writes a
-		// "text.region" line (after the read's timing), and a Line made earlier would carry an
-		// earlier time yet be written after it.
+		// Read the text before making the record's Line so the line's ms is the time the read
+		// finished.
 		EventText ReadEventText(const char* a_data, bool a_emptyIsBad, Site a_site)
 		{
 			// Long enough for the longest strings seen (a mod event string of 3,663 bytes in the 0.0.7
@@ -558,21 +367,19 @@ namespace probe::events
 				result.bad = a_emptyIsBad ? "null" : nullptr;
 				return result;
 			}
-			const auto chunk = NextChunk(a_site);
-			SiteTiming timing(a_site);
-			{
-				perf::Scope scope(chunk == kSmallChunk ? NamesOf(a_site).read256 : NamesOf(a_site).read512);
-				// One byte past the limit tells a text of exactly kMaxText bytes from a longer one.
-				result.read = text::CopyCString(a_data, kMaxText + 1, result.text, &timing, chunk);
-				if (result.read == text::Read::tooLong) {
-					result.text.resize(kMaxText);
-				}
-				result.bad = text::Classify(result.read, result.text, a_emptyIsBad);
-				if (result.bad) {
-					result.bytes = text::CopyBytes(a_data, kShownBytes, &timing);
-				}
+			SiteTiming  timing(a_site);
+			perf::Scope scope(NamesOf(a_site).read);
+			// One byte past the limit tells a text of exactly kMaxText bytes from a longer one.
+			result.read = text::CopyCString(a_data, kMaxText + 1, result.text, &timing);
+			if (result.read == text::Read::tooLong) {
+				result.text.resize(kMaxText);
 			}
-			timing.WriteRegionLines();
+			result.bad = text::Classify(result.read, result.text, a_emptyIsBad);
+			// Unreadable already failed on the first byte at a_data, so CopyBytes would only
+			// repeat a failing copy and return nothing.
+			if (result.bad && result.read != text::Read::unreadable) {
+				result.bytes = text::CopyBytes(a_data, kShownBytes, &timing);
+			}
 			return result;
 		}
 
@@ -1004,9 +811,6 @@ namespace probe::events
 
 	void RegisterGlobal()
 	{
-		// Before any string is read: the seed and sizes behind "text.read.<site>.512" and ".256".
-		Line("text.chunk").hex("seed", g_chunkSeed).num("large", static_cast<std::uint64_t>(text::kMaxChunk))
-			.num("small", static_cast<std::uint64_t>(kSmallChunk)).emit();
 		AddToHolder<RE::TESQuestStartStopEvent>("quest.startstop", OnQuestStartStop);
 		AddToHolder<RE::TESQuestStageEvent>("quest.stage", OnQuestStage);
 		AddToHolder<RE::TESActorLocationChangeEvent>("location.change", OnLocationChange);
@@ -1176,10 +980,8 @@ namespace probe::events
 			enemyAnim = toJson(g_enemyAnimCounts);
 			mods = toJson(g_modEventCounts);
 		}
-		const auto [regionsSkipped, regionsFull] = RegionCountsJson();
 		Line("counts").raw("animTags", anim).raw("enemyAnimTags", enemyAnim).raw("modEvents", mods)
 			.num("effectApplySuppressed", suppressed)
-			.num("badModEventsSkipped", g_badModEventsSkipped.exchange(0))
-			.raw("textRegionsSkipped", regionsSkipped).raw("textRegionsFull", regionsFull).emit();
+			.num("badModEventsSkipped", g_badModEventsSkipped.exchange(0)).emit();
 	}
 }
